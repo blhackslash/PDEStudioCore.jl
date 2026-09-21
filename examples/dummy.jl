@@ -1,5 +1,5 @@
 # examples/dummy.jl
-using PDECore
+using PDEStudioCore
 using StaticArrays
 
 # 1. Define a simple user simulation function
