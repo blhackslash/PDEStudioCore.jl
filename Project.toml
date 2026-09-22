@@ -1,6 +1,6 @@
 name = "PDEStudioCore"
 uuid = "93766fa7-4b93-4712-aa47-391c0d405e89"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Pascal Jung <dev@blackslash.win>"]
 
 [deps]
