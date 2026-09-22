@@ -641,4 +641,7 @@ end
         @test haskey(sim_2d.stats, :Solution)
         @test sim_2d.stats[:Solution] === sim_2d.u
     end
+    @testset "README Example" begin
+        @test include("examples/advection_1d.jl")
+    end
 end
