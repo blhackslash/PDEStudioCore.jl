@@ -271,7 +271,15 @@ function run_all_simulations(
     if parallel
         Threads.@threads for params in all_tasks
             try
-                run_smart_simulation(sim_config.simulation_func, params; force_overwrite=force_overwrite)
+                # 1. Resolve the task-specific simulation function on the fly[cite: 5, 6]
+                sim_sym = params[:sim_func_name]
+                sim_func = resolve_dynamic_function(sim_sym)
+                
+                if isnothing(sim_func)
+                    error("Could not resolve simulation function: $sim_sym")
+                end
+                
+                run_smart_simulation(sim_func, params; force_overwrite=force_overwrite)
             catch e
                 @error "Simulation Thread Error" exception=(e, catch_backtrace())
             end
@@ -280,7 +288,19 @@ function run_all_simulations(
         end
     else
         for params in all_tasks
-            run_smart_simulation(sim_config.simulation_func, params; force_overwrite=force_overwrite)
+            try
+                # 1. Resolve the task-specific simulation function on the fly[cite: 5, 6]
+                sim_sym = params[:sim_func_name]
+                sim_func = resolve_dynamic_function(sim_sym)
+                
+                if isnothing(sim_func)
+                    error("Could not resolve simulation function: $sim_sym")
+                end
+                
+                run_smart_simulation(sim_func, params; force_overwrite=force_overwrite)
+            catch e
+                @error "Simulation Thread Error" exception=(e, catch_backtrace())
+            end
             counter[] += 1
             ProgressMeter.update!(p, counter[])
         end
@@ -291,6 +311,8 @@ function run_all_simulations(
         @info "Pass 2: Calculating Stats"
         p2 = Progress(num_tasks; desc="Calculating Stats...")
         counter2 = Threads.Atomic{Int}(0)
+
+        ref_factory = resolve_dynamic_function(sim_config.reference_name)
         
         # Standard required stats (ignores derived stats and :Solution)
         standard_req_stats = filter(k -> k !== :Solution, collect(keys(_ACTIVE_STAT_REGISTRY[])))
@@ -321,25 +343,26 @@ function run_all_simulations(
             # --- SLOW PATH: Only loads if stats are actually missing ---
             sim_data = load_sim_data(params, Val(:raw))
             if !(sim_data isa NoSimData)  
-                calculate_all_stats!(sim_data, sim_config.reference_func; force_overwrite=force_overwrite)
+                ref_func = isnothing(ref_factory) ? nothing : ref_factory(params)
+                calculate_all_stats!(sim_data, ref_func; force_overwrite=force_overwrite)
             end
             counter2[] += 1
             ProgressMeter.update!(p2, counter2[])
         end
     end
-    
+    post_process_func = resolve_dynamic_function(sim_config.post_process_name)
     # Pass 3: Custom Post-Processing
-    if post_process
+    if post_process && !isnothing(post_process_func)
         @info "Pass 3: Custom Post-Processing"
         p3 = Progress(num_tasks; desc="Post-processing...")
         counter3 = Threads.Atomic{Int}(0)
-        
+
         for params in all_tasks
             sim_data = load_sim_data(params, Val(:raw))
             if !(sim_data isa NoSimData)
                 
                 # Execute the custom function 
-                changed = sim_config.post_process_func(sim_data)
+                changed = post_process_func(sim_data)
                 
                 # Overwrite on disk only if the user function returns true
                 if changed

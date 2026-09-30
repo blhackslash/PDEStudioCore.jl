@@ -179,12 +179,8 @@ It encapsulates the core simulation function alongside the baseline parameters, 
 - `varied_params::VariedDict`: The parameter grid to sweep over (executes the Cartesian product).
 - `source_files::Vector{String}`: Optional source files to track for reproducibility.
 """
-mutable struct SimulationConfig{F <: Function, A <: Union{Function, Nothing}, P <: Function}
-    simulation_func::F
-    simulation_name::Symbol
-    reference_func::A 
+mutable struct SimulationConfig
     reference_name::Union{Symbol, Nothing}
-    post_process_func::P
     post_process_name::Union{Symbol, Nothing}
     shared_params::ParamDict
     methods_dict::MethodDict
@@ -194,9 +190,41 @@ mutable struct SimulationConfig{F <: Function, A <: Union{Function, Nothing}, P 
 end
 
 """
-    SimulationConfig(...)
+    SimulationConfig(shared, methods, defaults; kwargs...)
 
-Constructs a strictly typed `SimulationConfig`. Automatically converts all loosely typed dictionary inputs into `ParamDict`s, `MethodDict`s, and `VariedDict`s, and safely resolves the requested simulation functions from the target module's namespace.
+Constructs a strictly typed `SimulationConfig`. The core simulation function should be specified via the `:sim_func_name` key directly within the `shared` or `methods` dictionaries.
+Automatically converts all loosely typed dictionary inputs into `ParamDict`s, `MethodDict`s, and `VariedDict`s.
+"""
+function SimulationConfig(
+    shared::Dict, 
+    methods::Dict, 
+    defaults::Vector;
+    varied_params::Dict = create_varied_dict(),
+    ref_func_name::Union{String, Symbol, Nothing} = nothing,
+    post_process_name::Union{String, Symbol, Nothing} = nothing,
+    source_files::Union{<:AbstractString, Vector{String}} = String[]
+)
+    # Convert generic dictionaries to enforced Symbol-keyed dictionaries
+    shared_sym   = ParamDict(Symbol(k) => v for (k, v) in shared)
+    methods_sym  = MethodDict(Symbol(k) => ParamDict(Symbol(ki) => vi for (ki, vi) in v) for (k, v) in methods)
+    varied_sym   = VariedDict(Symbol(k) => v for (k, v) in varied_params)
+    defaults_sym = Symbol.(defaults)
+    
+    ref_name_sym = isnothing(ref_func_name) ? nothing : Symbol(ref_func_name)
+    post_name_sym = isnothing(post_process_name) ? nothing : Symbol(post_process_name)
+    src_files = source_files isa AbstractString ? [String(source_files)] : String.(source_files)
+
+    return SimulationConfig(
+        ref_name_sym, post_name_sym, 
+        shared_sym, methods_sym, defaults_sym, varied_sym, src_files
+    )
+end
+
+"""
+    SimulationConfig(sim_func_name, shared, methods, defaults; kwargs...)
+
+**Deprecated:** Constructs a strictly typed `SimulationConfig`. 
+Passing `sim_func_name` as a positional argument is deprecated. Please define `:sim_func_name` directly within the `shared` or `methods` dictionary instead.
 """
 function SimulationConfig(
     sim_func_name::Union{String, Symbol},  
@@ -208,47 +236,23 @@ function SimulationConfig(
     post_process_name::Union{String, Symbol, Nothing} = nothing,
     source_files::Union{<:AbstractString, Vector{String}} = String[]
 )
-    target_module = _TARGET_MODULE[]
+    @warn "Deprecation Warning: Passing `sim_func_name` as the first argument to `SimulationConfig` is deprecated. Please define `:sim_func_name` directly within your `shared` or `methods` dictionary instead."
     
-    # 1. Safe string conversion to Symbol
-    ref_name_sym = isnothing(ref_func_name) ? nothing : Symbol(ref_func_name)
-    sim_name_sym = Symbol(sim_func_name)
-    post_name_sym = isnothing(post_process_name) ? nothing : Symbol(post_process_name)
-
-    # Convert generic dictionaries to enforced Symbol-keyed dictionaries
-    shared_sym   = ParamDict(Symbol(k) => v for (k, v) in shared)
-    methods_sym  = MethodDict(Symbol(k) => ParamDict(Symbol(ki) => vi for (ki, vi) in v) for (k, v) in methods)
-    varied_sym   = VariedDict(Symbol(k) => v for (k, v) in varied_params)
-    defaults_sym = Symbol.(defaults)
-    for (_, m_dict) = methods_sym
-        if haskey(m_dict,:ignore)
-            Symbol.(m_dict[:ignore])
-        end
+    # Inject the default simulation function into a copy of the shared parameters
+    shared_updated = copy(shared)
+    if !haskey(shared_updated, :sim_func_name) && !haskey(shared_updated, "sim_func_name")
+        shared_updated[:sim_func_name] = Symbol(sim_func_name)
     end
-
-    # 2. Resolve Dynamic Functions
-    sim_f = resolve_dynamic_function(sim_name_sym)
-    if isnothing(sim_f)
-        error("Aborting: Could not resolve simulation function '$sim_name_sym' in module $target_module.")
-    end
-
-    ref_factory = resolve_dynamic_function(ref_name_sym)
-    ref_f = isnothing(ref_factory) ? nothing : ref_factory(shared_sym)
     
-    post_f = resolve_dynamic_function(post_name_sym)
-    post_func = isnothing(post_f) ? (data) -> false : post_f
-
-    src_files = source_files isa AbstractString ? [String(source_files)] : String.(source_files)
-
-    return SimulationConfig{typeof(sim_f), typeof(ref_f), typeof(post_func)}(
-        sim_f, sim_name_sym, ref_f, ref_name_sym, post_func, post_name_sym, 
-        shared_sym, methods_sym, defaults_sym, varied_sym, src_files
+    # Delegate to the new primary constructor
+    return SimulationConfig(
+        shared_updated, methods, defaults;
+        varied_params = varied_params,
+        ref_func_name = ref_func_name,
+        post_process_name = post_process_name,
+        source_files = source_files
     )
 end
-
-# Simplify wrappers to cast strings to symbols before lookup
-resolve_simulation_function(func_name_str::Union{String, Symbol}, sim_func::Union{Function, Nothing}) = resolve_dynamic_function(Symbol(func_name_str), sim_func)
-resolve_reference_function(func_name::Union{String, Nothing, Symbol}) = isnothing(func_name) ? nothing : resolve_dynamic_function(Symbol(func_name))
 
 """
     resolve_dynamic_function(func_name::Union{Symbol, Nothing}, provided_func::Union{Function, Nothing} = nothing)

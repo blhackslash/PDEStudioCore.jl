@@ -211,8 +211,8 @@ end
 
     @testset "SimulationConfig Pipeline (Sweep & Orchestration)" begin
         # 1. Define the orchestration layers
-        shared = Dict(:cfl => 0.5, :N => 75)
-        methods = Dict(
+        shared = create_param_dict(:cfl => 0.5, :N => 75)
+        methods = create_method_dict(
             :upwind => Dict(:scheme => "upwind"),
             :lax_friedrichs => Dict(:scheme => "lax_friedrichs")
         )
@@ -234,7 +234,7 @@ end
         # 4. Verify disk state and automated stats generation
         for scheme in ["upwind", "lax_friedrichs"]
             for N in [50, 100]
-                p = create_param_dict(:scheme => scheme, :N => N, :cfl => 0.5)
+                p = create_param_dict(:scheme => scheme, :N => N, :cfl => 0.5, :sim_func_name => :advection_solver_1d)
                 
                 # Check that caching and hashing works
                 @test does_sim_data_exist(p)
@@ -251,8 +251,8 @@ end
         end
         
         # 5. Verify Lax-Friedrichs grid convergence from disk
-        sim_lf_50 = load_sim_data(create_param_dict(:scheme => "lax_friedrichs", :N => 50, :cfl => 0.5))
-        sim_lf_100 = load_sim_data(create_param_dict(:scheme => "lax_friedrichs", :N => 100, :cfl => 0.5))
+        sim_lf_50 = load_sim_data(create_param_dict(:scheme => "lax_friedrichs", :N => 50, :cfl => 0.5, :sim_func_name => :advection_solver_1d))
+        sim_lf_100 = load_sim_data(create_param_dict(:scheme => "lax_friedrichs", :N => 100, :cfl => 0.5, :sim_func_name => :advection_solver_1d))
         
         err_50 = sim_lf_50.stats[:l1error][end][1]
         err_100 = sim_lf_100.stats[:l1error][end][1]
@@ -300,7 +300,7 @@ end
                 p = create_param_dict(
                     :Ns => (Nx, Ny),
                     :scheme => "upwind",
-                    :cfl => 0.5
+                    :cfl => 0.5, :sim_func_name => :dummy_tuple_solver
                 )
 
                 @test does_sim_data_exist(p)
