@@ -196,22 +196,12 @@ function assemble_params(
     # 1. Add shared parameters (skipping ignored ones)
     for (key, val) in shared_params
         key in ignore_keys && continue
-        
-        if val isa Tuple && length(val) == 2 && val[1] === :const
-            current_params[key] = val[2]
-        else
-            current_params[key] = val
-        end
+        current_params[key] = val
     end
 
     # 2. Add/Override with method-specific parameters
     for (key, val) in method_dict
-        key === :ignore && continue 
-        if val isa Tuple && length(val) == 2 && val[1] === :const
-            current_params[key] = val[2]
-        else
-            current_params[key] = val
-        end
+        current_params[key] = val
     end
     return current_params
 end
