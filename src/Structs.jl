@@ -167,11 +167,7 @@ The central orchestration structure defining a complete simulation pipeline run.
 It encapsulates the core simulation function alongside the baseline parameters, method-specific overrides, and multi-dimensional parameter sweeps.
 
 # Fields
-- `simulation_func::F`: The compiled simulation function.
-- `simulation_name::Symbol`: The registered name of the simulation function.
-- `reference_func::A`: The compiled analytical reference function (if provided).
 - `reference_name::Union{Symbol, Nothing}`: The registered name of the reference function.
-- `post_process_func::P`: The custom post-processing function.
 - `post_process_name::Union{Symbol, Nothing}`: The registered name of the post-processing function.
 - `shared_params::ParamDict`: The baseline parameters shared across all pipeline runs.
 - `methods_dict::MethodDict`: Method-specific parameter overrides.
@@ -217,40 +213,6 @@ function SimulationConfig(
     return SimulationConfig(
         ref_name_sym, post_name_sym, 
         shared_sym, methods_sym, defaults_sym, varied_sym, src_files
-    )
-end
-
-"""
-    SimulationConfig(sim_func_name, shared, methods, defaults; kwargs...)
-
-**Deprecated:** Constructs a strictly typed `SimulationConfig`. 
-Passing `sim_func_name` as a positional argument is deprecated. Please define `:sim_func_name` directly within the `shared` or `methods` dictionary instead.
-"""
-function SimulationConfig(
-    sim_func_name::Union{String, Symbol},  
-    shared::Dict, 
-    methods::Dict, 
-    defaults::Vector;
-    varied_params::Dict = create_varied_dict(),
-    ref_func_name::Union{String, Symbol, Nothing} = nothing,
-    post_process_name::Union{String, Symbol, Nothing} = nothing,
-    source_files::Union{<:AbstractString, Vector{String}} = String[]
-)
-    @warn "Deprecation Warning: Passing `sim_func_name` as the first argument to `SimulationConfig` is deprecated. Please define `:sim_func_name` directly within your `shared` or `methods` dictionary instead."
-    
-    # Inject the default simulation function into a copy of the shared parameters
-    shared_updated = copy(shared)
-    if !haskey(shared_updated, :sim_func_name) && !haskey(shared_updated, "sim_func_name")
-        shared_updated[:sim_func_name] = Symbol(sim_func_name)
-    end
-    
-    # Delegate to the new primary constructor
-    return SimulationConfig(
-        shared_updated, methods, defaults;
-        varied_params = varied_params,
-        ref_func_name = ref_func_name,
-        post_process_name = post_process_name,
-        source_files = source_files
     )
 end
 

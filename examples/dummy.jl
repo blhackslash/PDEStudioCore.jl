@@ -27,7 +27,8 @@ end
 shared_params = create_param_dict(
     :N => 100,
     :wave_speed => 1.5,
-    :dt => 0.1
+    :dt => 0.1,
+    :sim_func_name => :my_wave_sim,
     )
 
 methods = create_method_dict(
@@ -41,7 +42,6 @@ varied_params = create_varied_dict(
 
 # 3. Create the Configuration
 config = SimulationConfig(
-    :my_wave_sim,
     shared_params,
     methods,
     [:upwind, :lax_wendroff];

@@ -1,6 +1,6 @@
 name = "PDEStudioCore"
 uuid = "93766fa7-4b93-4712-aa47-391c0d405e89"
-version = "0.1.2"
+version = "0.2.0"
 authors = ["Pascal Jung <dev@blackslash.win>"]
 
 [deps]
@@ -21,7 +21,7 @@ StatsBase = "2913bbd2-ae8a-5f71-8c99-4fb6c76f3a91"
 DataFrames = "1"
 Dates = "1"
 FileIO = "1"
-Interpolations = "0.16.3"
+Interpolations = "0.16"
 JLD2 = "0.6, 1"
 LinearAlgebra = "1"
 Polyester = "0.7, 1"

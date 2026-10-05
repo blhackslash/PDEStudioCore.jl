@@ -211,7 +211,7 @@ end
 
     @testset "SimulationConfig Pipeline (Sweep & Orchestration)" begin
         # 1. Define the orchestration layers
-        shared = create_param_dict(:cfl => 0.5, :N => 75)
+        shared = create_param_dict(:cfl => 0.5, :N => 75, :sim_func_name => :advection_solver_1d)
         methods = create_method_dict(
             :upwind => Dict(:scheme => "upwind"),
             :lax_friedrichs => Dict(:scheme => "lax_friedrichs")
@@ -220,7 +220,6 @@ end
         
         # 2. Build the Config
         config = SimulationConfig(
-            "advection_solver_1d", 
             shared, 
             methods, 
             [:upwind, :lax_friedrichs]; 
@@ -281,12 +280,11 @@ end
         @test reconstructed_tuples == expected_tuples
         @test all(t[:Ns] isa Tuple{Int, Int} for t in tasks)
 
-        shared = create_param_dict(:Ns => (10, 10), :cfl => 0.5)
+        shared = create_param_dict(:Ns => (10, 10), :cfl => 0.5, :sim_func_name => :dummy_tuple_solver)
         methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"))
         varied = create_varied_dict(:Ns__1 => [20, 30], :Ns__y => [5, 15])
 
         config = SimulationConfig(
-            :dummy_tuple_solver,
             shared,
             methods,
             [:upwind];
@@ -641,7 +639,8 @@ end
         @test haskey(sim_2d.stats, :Solution)
         @test sim_2d.stats[:Solution] === sim_2d.u
     end
-    @testset "README Example" begin
+    @testset "Examples" begin
         @test isnothing(include("../examples/advection_1d.jl"))
+        @test isnothing(include("../examples/dummy.jl"))
     end
 end
