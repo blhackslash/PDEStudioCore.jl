@@ -115,3 +115,7 @@ config = SimulationConfig(
 set_save_path!(joinpath(@__DIR__, "results"))
 run_all_simulations(config, parallel=true, calculate_stats=true)
 ```
+
+---
+
+Portions of this codebase and documentation were drafted with the assistance of large language models (LLMs). All code has been human-reviewed, verified, and tested. If you notice any inaccuracies or unexpected behavior, please open an issue.
