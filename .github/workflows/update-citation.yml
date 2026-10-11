@@ -1,0 +1,79 @@
+name: Sync CITATION.cff Version
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Project.toml"
+  workflow_dispatch:
+
+jobs:
+  update-citation:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Update CITATION.cff
+        run: |
+          python - << 'EOF'
+          import re
+          from datetime import date
+
+          # 1. Extract version from Project.toml
+          with open("Project.toml", "r", encoding="utf-8") as f:
+              proj_content = f.read()
+
+          m_ver = re.search(r'(?m)^version\s*=\s*"([^"]+)"', proj_content)
+          if not m_ver:
+              print("No version found in Project.toml")
+              exit(0)
+          new_ver = m_ver.group(1)
+
+          # 2. Read CITATION.cff
+          try:
+              with open("CITATION.cff", "r", encoding="utf-8") as f:
+                  cff_content = f.read()
+          except FileNotFoundError:
+              print("CITATION.cff not found.")
+              exit(1)
+
+          # 3. Check if version actually changed
+          cur_ver = re.search(r'(?m)^version:\s*([^\s\n]+)', cff_content)
+          if cur_ver and cur_ver.group(1).strip('"\'') == new_ver:
+              print(f"CITATION.cff is already at version {new_ver}. No change needed.")
+              exit(0)
+
+          # 4. Replace version and date-released
+          today = date.today().isoformat()
+          cff_content = re.sub(r'(?m)^version:\s*.*$', f'version: {new_ver}', cff_content)
+          cff_content = re.sub(r'(?m)^date-released:\s*.*$', f'date-released: {today}', cff_content)
+
+          with open("CITATION.cff", "w", encoding="utf-8") as f:
+              f.write(cff_content)
+
+          print(f"Updated CITATION.cff to version {new_ver} ({today})")
+          EOF
+
+      - name: Commit and push changes
+        run: |
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -n "$(git status --porcelain CITATION.cff)" ]; then
+            git add CITATION.cff
+            git commit -m "chore: bump version in CITATION.cff [skip ci]"
+            git push
+          else
+            echo "No changes to commit."
+          fi
