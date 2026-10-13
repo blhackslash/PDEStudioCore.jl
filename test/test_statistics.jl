@@ -41,6 +41,13 @@ end
         calculate_all_stats!(sim, exact_advection; save = false)
         @test size(sim.stats[:total]) == (size(sim.u, 1),)
         @test get_integration_measure(:total, sim.domain) ≈ sim.domain.spacing[2]
+
+        # Kept dimensions are reported in domain order, whatever order the registry lists them in
+        register_stat!(:total, [:t, :x])
+        calculate_all_stats!(sim, exact_advection; save = false)
+        @test get_kept_dims(:total, sim.domain) == [:x, :t]
+        @test size(sim.stats[:total]) == size(sim.u)
+        @test get_kept_indices(:total, sim.domain) == [1, 2]
     finally
         delete_stat!(:total)
     end

@@ -31,6 +31,7 @@ The old call forms still work, including `x_dim`/`y_dim` and the `(x_grid, y_gri
 - `calculate_all_stats!` no longer saves converted or reference datasets over the native data of a run (previously, calling it on `load_sim_data(p, :lagrangian)` replaced the native Eulerian data on disk).
 - Parameters equal to `nothing` stay `nothing` after normalisation (previously they became the type `Nothing`; the hash is unchanged).
 - `run_all_simulations` deduplicates tasks, logs and skips failing tasks in every pass, actually loads `sources`, and stores results under the task parameters.
+- [`get_kept_dims`](@ref) returns the kept dimensions in domain order (the order of the statistic's array axes), also when the registry lists them in another order (e.g. `register_stat!(:s, [:t, :x])` on an `(x, t)` domain gives `[:x, :t]`).
 - [`is_reference_method`](@ref) matches words of the method name (e.g. `:inexact_newton` is no longer skipped).
 - `delete_sim_data` rejects an empty filter and returns the deleted paths; `rehash_sim_data` returns `old => new` pairs.
 - `load_sim_data(hash_prefix)` matches the hash part of file names only (not timestamps); `key = "raw"` returns a single entry.

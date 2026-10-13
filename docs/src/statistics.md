@@ -31,7 +31,7 @@ Register the statistic's name and the dimensions to **retain**; all other dimens
 register_stat!(:custom_energy, :time)   # one value per time step
 ```
 
-Valid kept dimensions are the aliases `:all` (pointwise field), `:space` (integrates out time), `:time` (integrates out space), a single dimension name such as `:x`, or a vector of names such as `[:x, :t]` (`Symbol[]` gives a single scalar).
+Valid kept dimensions are the aliases `:all` (pointwise field), `:space` (integrates out time), `:time` (integrates out space), a single dimension name such as `:x`, or a vector of names such as `[:x, :t]` (`Symbol[]` gives a single scalar). The statistic's array always has its axes in domain order, and [`get_kept_dims`](@ref) reports them in that order.
 
 ### Step B: Overload `calc_stat`
 

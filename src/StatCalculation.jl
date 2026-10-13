@@ -30,9 +30,10 @@ function _kept_dims(reg_val, domain::DomainInfo)
     elseif reg_val === :time
         return domain.time_dim === nothing ? Symbol[] : Symbol[domain.time_dim]
     elseif reg_val isa Symbol  # a single dimension name
-        return reg_val in domain.dim_keys ? Symbol[reg_val] : Symbol[]
+        return Symbol[d for d in domain.dim_keys if d === reg_val]
     elseif reg_val isa AbstractVector
-        return Symbol[d for d in reg_val if d in domain.dim_keys]
+        # domain order, i.e. the order of the dimensions of the statistic's array
+        return Symbol[d for d in domain.dim_keys if d in reg_val]
     end
     return Symbol[]
 end
@@ -44,7 +45,8 @@ _kept_indices(kept::AbstractVector{Symbol}, domain::DomainInfo) =
     get_kept_dims(stat::Symbol, domain::DomainInfo)
 
 Resolves the registry entry of `stat` (aliases `:all`, `:space`, `:time`, a dimension name or a
-vector of names) into the dimension names it keeps. `:Solution` always keeps all dimensions.
+vector of names) into the dimension names it keeps, in domain order (the order of the dimensions of
+the statistic's array, whatever order the registry lists them in). `:Solution` always keeps all dimensions.
 """
 function get_kept_dims(stat::Symbol, domain::DomainInfo)
     stat === :Solution && return collect(domain.dim_keys)
