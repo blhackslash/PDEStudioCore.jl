@@ -64,7 +64,7 @@ LSimData(params, domain, t, x, u)
 | `keys`, `values`, `pairs`, `haskey`, `get`, `length` | as for a `Dict`, including `:Solution` |
 | `copy(data.stats)` | plain `Dict` snapshot |
 
-On disk, the solution is stored once (in `u`); files written by earlier versions, which also stored it among the statistics, are read transparently.
+On disk, the solution is stored once (in `u`).
 
 ## 3. Storage Layout
 

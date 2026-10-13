@@ -1,53 +1,42 @@
 # examples/dummy.jl
+# A minimal pipeline: a mock "solver", two methods and a sweep over the time step.
 using PDEStudioCore
 using StaticArrays
 
-# 1. Define a simple user simulation function
+# 1. A user simulation function: takes the resolved parameters of one run, returns a dataset
 function my_wave_sim(params::ParamDict)
     N  = params[:N]
     dt = params[:dt]
     c  = params[:wave_speed]
 
-    # Simple 1D Space + 1D Time Grid
-    x = collect(range(0.0, 1.0, length=N))
-    t = collect(range(0.0, 2.0, step=dt))
+    # 1D space + time grid
+    x = collect(range(0.0, 1.0, length = N))
+    t = collect(range(0.0, 2.0, step = dt))
 
-    # Generate mock data: u(x,t) = sin(x - c*t)
-    u = zeros(SVector{1, Float64}, length(x), length(t))
-    for (j, t_val) in enumerate(t)
-        for (i, x_val) in enumerate(x)
-            u[i, j] = SVector{1, Float64}(sin(x_val - c * t_val))
-        end
-    end
+    # Mock data: u(x, t) = sin(x - c t), stored as u[i, n]::SVector{1}
+    u = [SVector(sin(xi - c * tn)) for xi in x, tn in t]
 
-    return create_sim_data(x, u, t, params; time_dim=:t)
+    return create_sim_data(x, u, t, params)   # dims (:x, :t)
 end
 
-# 2. Setup Dictionaries
-shared_params = create_param_dict(
+# 2. Parameters: shared by every run, per-method overrides, and the sweep
+shared = create_param_dict(
     :N => 100,
     :wave_speed => 1.5,
-    :dt => 0.1,
-    :sim_func_name => :my_wave_sim,
-    )
+    :dt => 0.1,                     # default, overwritten by the sweep
+    :sim_func_name => :my_wave_sim, # the function every run calls
+)
 
 methods = create_method_dict(
     :upwind => create_param_dict(:solver => "upwind"),
-    :lax_wendroff => create_param_dict(:solver => "lax_wendroff")
-    )
+    :lax_wendroff => create_param_dict(:solver => "lax_wendroff"),
+)
 
-varied_params = create_varied_dict(
-    :dt => [0.1, 0.05]
-    )
+varied = create_varied_dict(:dt => [0.1, 0.05])
 
-# 3. Create the Configuration
-config = SimulationConfig(
-    shared_params,
-    methods,
-    [:upwind, :lax_wendroff];
-    varied_params = varied_params
-    )
+# 3. The configuration: shared, methods, active methods (`defaults`), sweep
+config = SimulationConfig(shared, methods, [:upwind, :lax_wendroff]; varied = varied)
 
-# 4. Run the Pipeline!
+# 4. Run the pipeline (2 methods × 2 time steps = 4 runs, cached on disk by parameter hash)
 set_save_path!(joinpath(@__DIR__, "results"))
-run_all_simulations(config, parallel=true, calculate_stats=true)
+run_all_simulations(config; parallel = true, calculate_stats = true)

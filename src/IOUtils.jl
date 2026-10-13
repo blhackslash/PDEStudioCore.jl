@@ -172,7 +172,6 @@ end
 # here (and are not stale conversion caches) are carried over.
 function _write_sim_file(path::AbstractString, data::AbstractSimData, metadata::AbstractDict,
                          previous::Union{Nothing, AbstractString})
-    delete!(_raw_stats(data), :Solution)  # redundant copy written by older versions; `u` holds it
     tmp = path * ".tmp"
     try
         jldopen(tmp, "w") do file
@@ -254,9 +253,10 @@ load_sim_data(params::AbstractDict, ::Val{:raw}) = _load_key(get_file_name(param
 
 function _native_and_shape(path::AbstractString)
     return jldopen(path, "r") do file
-        native = haskey(file, "native") ? file["native"] : _data_kind(file["raw"])
-        shape = haskey(file, "shape") ? Tuple(file["shape"]) : nothing
-        return native, shape
+        (haskey(file, "native") && haskey(file, "shape")) || throw(ArgumentError(
+            "$(basename(path)) was written by an older PDEStudioCore version (no \"native\"/\"shape\" metadata). " *
+            "Re-run it with `run_all_simulations(config; force_overwrite = true)` or delete it."))
+        return file["native"], Tuple(file["shape"])
     end
 end
 
@@ -264,7 +264,7 @@ end
 function _is_native_representation(path::AbstractString, data::AbstractSimData)
     native, shape = _native_and_shape(path)
     native === _data_kind(data) || return false
-    return shape === nothing || shape == _data_shape(data)  # files from older versions lack "shape"
+    return shape == _data_shape(data)
 end
 
 function load_sim_data(params::AbstractDict, ::Val{:eulerian}, res::Tuple)
@@ -275,7 +275,6 @@ function load_sim_data(params::AbstractDict, ::Val{:eulerian}, res::Tuple)
     _has_key(path, key) && return _load_key(path, key)
 
     raw = _load_key(path, "raw")
-    raw isa ESimData && size(raw.u) == Tuple(res) && return raw  # files without shape metadata
     @info "Eulerian representation $key not cached; generating it on the fly..."
     conv = raw isa LSimData ? convert_to_eulerian(raw, res) : resample_eulerian(raw, res)
     _ENABLE_CONV_CACHE[] && _append_key!(path, key, conv)
@@ -343,7 +342,6 @@ function does_sim_data_exist(params::AbstractDict, ::Val{:eulerian}, res::Tuple)
     _has_key(path, get_conv_key(res)) && return true
     native, shape = _native_and_shape(path)
     native === :eulerian || return false
-    shape === nothing && (shape = size(_load_key(path, "raw").u))  # files without shape metadata
     return shape == Tuple(res)
 end
 

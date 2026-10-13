@@ -26,26 +26,6 @@ mutable struct SimulationConfig
     sources::Vector{String}
 end
 
-# Old field and keyword names (still accepted, with a one-time deprecation warning).
-const _LEGACY_CONFIG_NAMES = Dict{Symbol, Symbol}(
-    :reference_name => :reference,
-    :ref_func_name => :reference,
-    :post_process_name => :postprocess,
-    :shared_params => :shared,
-    :methods_dict => :methods,
-    :active_methods => :defaults,
-    :varied_params => :varied,
-    :source_files => :sources,
-)
-const _LEGACY_WARNED = Set{Symbol}()
-
-function _legacy_name_warning(old::Symbol, new::Symbol)
-    old in _LEGACY_WARNED && return nothing
-    push!(_LEGACY_WARNED, old)
-    @warn "SimulationConfig: `$old` is deprecated, use `$new` instead."
-    return nothing
-end
-
 _optional_name(::Nothing) = nothing
 _optional_name(name::Union{Symbol, AbstractString}) = Symbol(name)
 _optional_name(f::Function) = nameof(f)
@@ -75,34 +55,13 @@ end
 Builds a [`SimulationConfig`](@ref), converting loosely typed dictionaries (string or symbol keys)
 into [`ParamDict`](@ref)/[`MethodDict`](@ref)/[`VariedDict`](@ref). Without `methods`, every run uses
 the shared parameters only. Functions are referenced by name (resolved in [`get_target_module`](@ref)).
-
-The old keyword names `varied_params`, `ref_func_name`, `post_process_name` and `source_files`
-are still accepted but deprecated.
 """
 function SimulationConfig(shared::AbstractDict = ParamDict(), methods::AbstractDict = MethodDict(),
                           defaults = sort!(Symbol[Symbol(k) for k in keys(methods)]);
                           varied::AbstractDict = VariedDict(),
                           reference = nothing,
                           postprocess = nothing,
-                          sources::Union{AbstractString, AbstractVector} = String[],
-                          kwargs...)
-    varied_in, reference_in, postprocess_in, sources_in = varied, reference, postprocess, sources
-    for (key, value) in kwargs
-        new = get(_LEGACY_CONFIG_NAMES, key, nothing)
-        if new === :varied
-            varied_in = value
-        elseif new === :reference
-            reference_in = value
-        elseif new === :postprocess
-            postprocess_in = value
-        elseif new === :sources
-            sources_in = value
-        else
-            throw(ArgumentError("unknown keyword argument `$key`; valid keywords are `varied`, `reference`, `postprocess` and `sources`"))
-        end
-        _legacy_name_warning(key, new)
-    end
-
+                          sources::Union{AbstractString, AbstractVector} = String[])
     methods_p = _config_field(:methods, methods)
     defaults_v = _config_field(:defaults, defaults)
     for m in defaults_v
@@ -111,24 +70,13 @@ function SimulationConfig(shared::AbstractDict = ParamDict(), methods::AbstractD
         end
     end
 
-    return SimulationConfig(_config_field(:shared, shared), methods_p, defaults_v, _config_field(:varied, varied_in),
-                            _config_field(:reference, reference_in), _config_field(:postprocess, postprocess_in),
-                            _config_field(:sources, sources_in))
+    return SimulationConfig(_config_field(:shared, shared), methods_p, defaults_v, _config_field(:varied, varied),
+                            _config_field(:reference, reference), _config_field(:postprocess, postprocess),
+                            _config_field(:sources, sources))
 end
 
-function Base.getproperty(config::SimulationConfig, name::Symbol)
-    hasfield(SimulationConfig, name) && return getfield(config, name)
-    new = get(_LEGACY_CONFIG_NAMES, name, nothing)
-    new === nothing && return getfield(config, name)  # throws the usual error
-    _legacy_name_warning(name, new)
-    return getfield(config, new)
-end
-
-function Base.setproperty!(config::SimulationConfig, name::Symbol, value)
-    field = hasfield(SimulationConfig, name) ? name : get(_LEGACY_CONFIG_NAMES, name, name)
-    field === name || _legacy_name_warning(name, field)
-    return setfield!(config, field, _config_field(field, value))
-end
+# Assigning a field accepts the same loose input as the constructor (e.g. `config.defaults = :upwind`).
+Base.setproperty!(config::SimulationConfig, name::Symbol, value) = setfield!(config, name, _config_field(name, value))
 
 """
     resolve_dynamic_function(name, provided = nothing)

@@ -13,24 +13,22 @@ count_post(data) = (POST_CALLS[] += 1; nothing)  # returns nothing: nothing is s
     @test length(generate_tasks(cfg)) == 4
     @test occursin("SimulationConfig", repr("text/plain", cfg))
 
-    # Deprecated keyword and field names keep working
-    legacy = SimulationConfig(shared, methods, [:upwind]; varied_params = Dict(:N => [10]),
-                              ref_func_name = :exact_advection_factory, post_process_name = :count_post,
-                              source_files = "not_loaded_here.jl")
-    @test legacy.varied[:N] == [10] && legacy.reference === :exact_advection_factory
-    @test legacy.postprocess === :count_post && legacy.sources == ["not_loaded_here.jl"]
-    @test legacy.active_methods == [:upwind] && legacy.shared_params === legacy.shared
-    legacy.varied_params = Dict(:N => [30])
-    @test legacy.varied[:N] == [30]
-    @test_throws ArgumentError SimulationConfig(shared, methods; not_a_keyword = 1)
+    # Only the current keyword and field names exist
+    full = SimulationConfig(shared, methods, [:upwind]; varied = Dict(:N => [10]), reference = :exact_advection_factory,
+                            postprocess = :count_post, sources = "not_loaded_here.jl")
+    @test full.varied[:N] == [10] && full.postprocess === :count_post && full.sources == ["not_loaded_here.jl"]
+    @test_throws MethodError SimulationConfig(shared, methods; varied_params = Dict(:N => [10]))
+    @test_throws Exception full.active_methods  # ErrorException (FieldError on Julia ≥ 1.12)
+    @test_throws ArgumentError full.varied_params = Dict(:N => [30])
 
     # Assigning fields accepts the same loose input as the constructor
-    legacy.reference = "exact_advection_factory"
-    legacy.sources = "a.jl"
-    legacy.defaults = :lax_friedrichs
-    legacy.shared = Dict("N" => 3)
-    @test legacy.reference === :exact_advection_factory && legacy.sources == ["a.jl"]
-    @test legacy.defaults == [:lax_friedrichs] && legacy.shared == ParamDict(:N => 3)
+    full.reference = "exact_advection_factory"
+    full.sources = "a.jl"
+    full.defaults = :lax_friedrichs
+    full.shared = Dict("N" => 3)
+    full.varied = Dict("N" => 1:3)
+    @test full.reference === :exact_advection_factory && full.sources == ["a.jl"]
+    @test full.defaults == [:lax_friedrichs] && full.shared == ParamDict(:N => 3) && full.varied[:N] == [1, 2, 3]
 
     # Without methods, the shared parameters run once
     @test length(generate_tasks(SimulationConfig(Dict(:sim_func_name => :advection_solver_1d, :N => 8)))) == 1

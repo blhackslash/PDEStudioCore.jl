@@ -4,15 +4,11 @@
 
 _default_space_keys(DS::Int) = DS <= 3 ? (:x, :y, :z)[1:DS] : ntuple(i -> Symbol(:x, i), DS)
 
-function _space_keys(DS::Int, dims, x_dim = nothing, y_dim = nothing, z_dim = nothing)
+function _space_keys(DS::Int, dims)
     names = dims === nothing ? Symbol[_default_space_keys(DS)...] :
             dims isa Union{Symbol, AbstractString} ? [Symbol(dims)] : Symbol[Symbol(d) for d in dims]
     length(names) == DS || throw(ArgumentError("`dims` must name $DS spatial dimension(s), got $(length(names))"))
-    for (i, name) in ((1, x_dim), (2, y_dim), (3, z_dim))  # legacy `x_dim`/`y_dim`/`z_dim` keywords
-        name === nothing && continue
-        i <= DS || throw(ArgumentError("the data has $DS spatial dimension(s); cannot rename spatial dimension $i"))
-        names[i] = Symbol(name)
-    end
+    allunique(names) || throw(ArgumentError("`dims` must not repeat a name, got $(Tuple(names))"))
     return Tuple(names)
 end
 
@@ -127,7 +123,6 @@ registry is copied into the dataset and `:Solution` is coupled to `u` automatica
 - `time_dim`: name of the time axis (default `:t`).
 - `xmins`, `xmaxs`, `tmin`, `tmax`: override the bounding box (defaults: extent of the data).
   The integration measure (`domain.spacing`) is always derived from the axes themselves.
-- `x_dim`, `y_dim`, `z_dim`: single-axis renames, kept for backwards compatibility.
 
 The parameters are copied, so later changes to `params` do not affect the dataset.
 
@@ -142,31 +137,24 @@ create_sim_data(x_traj, u_traj, t, params)             # particles over time
 """
 function create_sim_data(space::Union{AbstractVector{<:Real}, Tuple}, u::AbstractArray, t::AbstractVector{<:Real},
                          params::AbstractDict; dims = nothing, time_dim::Union{Nothing, Symbol} = :t,
-                         xmins = nothing, xmaxs = nothing, tmin = nothing, tmax = nothing,
-                         x_dim = nothing, y_dim = nothing, z_dim = nothing)
+                         xmins = nothing, xmaxs = nothing, tmin = nothing, tmax = nothing)
     time_dim === nothing && throw(ArgumentError(
         "a time vector was given, so `time_dim` must be a Symbol; use `create_sim_data(space, u, params)` for static data"))
     s_axes = _space_axes(space)
     DS = length(s_axes)
-    dim_keys = (_space_keys(DS, dims, x_dim, y_dim, z_dim)..., time_dim)
+    dim_keys = (_space_keys(DS, dims)..., time_dim)
+    time_dim in dim_keys[1:DS] && throw(ArgumentError("the time dimension :$time_dim is also used as a spatial dimension name"))
     return _create_eulerian((s_axes..., t), u, params, dim_keys, time_dim,
                             _bounds_tuple(DS, true, xmins, tmin), _bounds_tuple(DS, true, xmaxs, tmax))
 end
 
 function create_sim_data(space::Union{AbstractVector{<:Real}, Tuple}, u::AbstractArray, params::AbstractDict;
-                         dims = nothing, xmins = nothing, xmaxs = nothing,
-                         x_dim = nothing, y_dim = nothing, z_dim = nothing)
+                         dims = nothing, xmins = nothing, xmaxs = nothing)
     s_axes = _space_axes(space)
     DS = length(s_axes)
     DS >= 1 || throw(ArgumentError("static data needs at least one spatial axis"))
-    return _create_eulerian(s_axes, u, params, _space_keys(DS, dims, x_dim, y_dim, z_dim), nothing,
+    return _create_eulerian(s_axes, u, params, _space_keys(DS, dims), nothing,
                             _bounds_tuple(DS, false, xmins, nothing), _bounds_tuple(DS, false, xmaxs, nothing))
-end
-
-# Legacy 2D form: create_sim_data(x_grid, y_grid, u, t, params)
-function create_sim_data(x_grid::AbstractMatrix{<:Real}, y_grid::AbstractMatrix{<:Real}, u::AbstractArray,
-                         t::AbstractVector{<:Real}, params::AbstractDict; kwargs...)
-    return create_sim_data((x_grid, y_grid), u, t, params; kwargs...)
 end
 
 # ------------------------------------------------------------------------------

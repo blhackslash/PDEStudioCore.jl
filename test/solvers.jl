@@ -32,7 +32,7 @@ function advection_solver_1d(params::ParamDict)
         end
         u[i, n + 1] = SVector(val)
     end
-    return create_sim_data(x, u, t, params; time_dim = :t, x_dim = :x)  # legacy keyword still accepted
+    return create_sim_data(x, u, t, params; time_dim = :t, dims = :x)
 end
 
 exact_advection(st::SVector{2, Float64}) = SVector(sin(st[1] - st[2]) + 2.0)

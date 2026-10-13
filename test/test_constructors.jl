@@ -34,11 +34,14 @@
     @test create_sim_data(x, ones(Int, 5, 3), t, p) isa ESimData{2, 1, 1, Float64}
     @test create_sim_data(Float32.(x), ones(Float32, 5, 3), Float32.(t), p) isa ESimData{2, 1, 1, Float32}
 
-    # ndgrid coordinate arrays: legacy 5-argument form and tuple form
+    # ndgrid coordinate arrays (tuple form)
     xg = [xi for xi in x, _ in y]
     yg = [yi for _ in x, yi in y]
-    s10 = create_sim_data(xg, yg, u2, t, p; x_dim = :a, y_dim = :b)
+    s10 = create_sim_data((xg, yg), u2, t, p; dims = (:a, :b))
     @test s10.domain.dim_keys == (:a, :b, :t) && s10.axes[1] ≈ x && s10.axes[2] ≈ y
+    # Dimension names must be unique (also against the time dimension)
+    @test_throws ArgumentError create_sim_data((xg, yg), u2, t, p; dims = (:a, :a))
+    @test_throws ArgumentError create_sim_data((xg, yg), u2, t, p; dims = (:a, :t))
     @test create_sim_data((xg, yg), u2, t, p).axes[2] ≈ y
     # MATLAB/meshgrid-ordered arrays are rejected instead of silently producing wrong axes
     @test_throws ArgumentError create_sim_data((permutedims(xg), permutedims(yg)), u2, t, p)
@@ -107,7 +110,7 @@ end
     u_tensor = [SVector{1, Float64}(x * y + t) for x in x_vec, y in y_vec, t in t_vec]
     params_2d = create_param_dict(:Nx => Nx, :Ny => Ny, :Nt => Nt, :dim => "2+1D")
 
-    sim_2d = create_sim_data(x_grid, y_grid, u_tensor, t_vec, params_2d; time_dim = :t, x_dim = :x, y_dim = :y)
+    sim_2d = create_sim_data((x_grid, y_grid), u_tensor, t_vec, params_2d; time_dim = :t, dims = (:x, :y))
     @test sim_2d isa ESimData{3, 2, 1, Float64}
     @test sim_2d.domain.dim_keys == (:x, :y, :t)
     @test sim_2d.domain.time_dim == :t

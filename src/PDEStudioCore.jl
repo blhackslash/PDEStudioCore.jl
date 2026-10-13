@@ -44,7 +44,6 @@ include("ConversionUtils.jl")
 include("StatCalculation.jl")
 include("Simulations.jl")
 include("Display.jl")
-include("Compat.jl")
 
 function __init__()
     _SAVE_ROOT_PATH[] = pwd()

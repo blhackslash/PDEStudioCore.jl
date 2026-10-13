@@ -94,4 +94,4 @@ The third positional argument (`defaults`, the methods to run) is optional and d
 
 All dictionaries may use `String` or `Symbol` keys, and assigning a field (e.g. `config.reference = "exact_factory"`) accepts the same loose input as the constructor.
 
-The previous field names (`shared_params`, `methods_dict`, `active_methods`, `varied_params`, `reference_name`, `post_process_name`, `source_files`) still work as properties, and the previous keywords (`varied_params`, `ref_func_name`, `post_process_name`, `source_files`) still work in the constructor, each with a one-time deprecation warning.
+Unknown keywords and field names raise an error.

@@ -159,7 +159,7 @@ StatsView(data::AbstractSimData{D, DS, M, T}) where {D, DS, M, T} = StatsView{M,
 @inline _raw_stats(data::AbstractSimData) = getfield(data, :stats)
 @inline _solution(data::AbstractSimData) = getfield(data, :u)
 
-Base.length(v::StatsView) = 1 + length(_raw_stats(v.data)) - haskey(_raw_stats(v.data), :Solution)
+Base.length(v::StatsView) = 1 + length(_raw_stats(v.data))
 Base.haskey(v::StatsView, key) = key === :Solution || haskey(_raw_stats(v.data), key)
 Base.get(v::StatsView, key, default) = key === :Solution ? _solution(v.data) : get(_raw_stats(v.data), key, default)
 Base.get(f::Base.Callable, v::StatsView, key) = key === :Solution ? _solution(v.data) : get(f, _raw_stats(v.data), key)
@@ -168,12 +168,7 @@ Base.getindex(v::StatsView, key) = key === :Solution ? _solution(v.data) : _raw_
 Base.iterate(v::StatsView) = ((:Solution => _solution(v.data)), nothing)
 function Base.iterate(v::StatsView, state)
     raw = _raw_stats(v.data)
-    next = state === nothing ? iterate(raw) : iterate(raw, state)
-    # Files written by older versions may still hold a redundant `:Solution` entry.
-    while next !== nothing && first(next[1]) === :Solution
-        next = iterate(raw, next[2])
-    end
-    return next
+    return state === nothing ? iterate(raw) : iterate(raw, state)
 end
 
 # Derived statistics are stored as given (numbers are converted to SVectors); use `add_stat!`

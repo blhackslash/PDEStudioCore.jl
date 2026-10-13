@@ -55,7 +55,7 @@ end
     @test calculate_hash(clean) == calculate_hash(p)
     @test calculate_hash(get_clean_params(clean)) == calculate_hash(p)
 
-    # The hash format is unchanged, so files written by earlier versions are still found
+    # The hash format is stable (regression values), so stored data is found again across sessions
     @test calculate_hash(create_param_dict(:N => 50, :cfl => 0.5, :scheme => "upwind")) ==
           "504a0a25d87114ea4c1c3fa7fe16e28a5329892b6da664b1fbd5804d2bf6d720"
     @test calculate_hash(create_param_dict(:Ns => (20, 15), :sim_func_name => :advection_solver_1d,
