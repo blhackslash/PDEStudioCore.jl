@@ -6,8 +6,8 @@ authors:
     email: "dev@blackslash.win"
     orcid: https://orcid.org/0009-0000-1223-4611
 title: "PDEStudioCore.jl: High-Performance Numerical Backend for PDE Simulations"
-version: 0.2.0
-date-released: 2026-10-11
+version: 0.2.1
+date-released: 2026-10-13
 url: "https://github.com/blhackslash/PDEStudioCore.jl"
 identifiers:
   - type: doi
