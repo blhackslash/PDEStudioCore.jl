@@ -35,6 +35,7 @@ end
     assemble_params(shared::AbstractDict, methods::AbstractDict, method_name::Symbol)
 
 Shared parameters (minus the method's ignored keys) overridden by the method's own parameters.
+The `:ignore` entry itself only controls the assembly and is not part of the result (or the hash).
 """
 function assemble_params(shared_params::AbstractDict, method_collection::AbstractDict, method_name::Symbol)
     ignore_keys = get_ignore_keys(method_collection, method_name)
@@ -43,12 +44,19 @@ function assemble_params(shared_params::AbstractDict, method_collection::Abstrac
         Symbol(key) in ignore_keys || (params[Symbol(key)] = val)
     end
     for (key, val) in get(method_collection, method_name, ParamDict())
+        Symbol(key) === :ignore && continue
         params[Symbol(key)] = val
     end
     return params
 end
 
-_tuple_index(s::AbstractString) = s in ("x", "1") ? 1 : s in ("y", "2") ? 2 : s in ("z", "3") ? 3 : tryparse(Int, s)
+function _tuple_index(s::AbstractString)
+    s in ("x", "1") && return 1
+    s in ("y", "2") && return 2
+    s in ("z", "3") && return 3
+    idx = tryparse(Int, s)
+    return idx !== nothing && idx >= 1 ? idx : nothing
+end
 
 # Splits a varied key into (base key, tuple index); the index is `nothing` for ordinary keys.
 function _split_varied_key(k::Symbol)

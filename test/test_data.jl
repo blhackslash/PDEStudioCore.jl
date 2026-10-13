@@ -182,6 +182,11 @@ end
         entries = load_sim_data(prefix)
         @test entries["raw"] isa ESimData && entries["raw"].params[:test_id] == "format_E"
         @test load_sim_data(prefix; key = "raw") isa ESimData
+        # Extra metadata cannot clobber the file layout
+        @test_throws ArgumentError save_sim_data(sim_E; overwrite = true, metadata = Dict("raw" => 1))
+        @test_throws ArgumentError save_sim_data(sim_E; overwrite = true, metadata = Dict(:conv_L => 1))
+        save_sim_data(sim_E; overwrite = true, metadata = Dict(:note => "kept"))
+        @test load_sim_data(prefix; key = "note") == "kept"
         @test_throws SimFileNotFoundError load_sim_data("00000000000000000")
         @test_throws SimFileNotFoundError load_sim_data("2026-10")  # timestamps are not matched
     end

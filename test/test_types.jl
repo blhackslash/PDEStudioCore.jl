@@ -58,6 +58,12 @@ end
     @test_throws ArgumentError delete!(sim.stats, :Solution)
     @test_throws ArgumentError add_stat!(sim, :Solution, u, :all)
 
+    # Assigning the whole stats dictionary converts values like `setindex!` does
+    sim3 = ESimData(Dict(:a => 1), domain, (x, t), u)
+    sim3.stats[:one] = 1.0
+    sim3.stats = Dict(:Solution => u, :two => 2.0)
+    @test sim3.stats[:two] === SVector(2.0) && !haskey(sim3.stats, :one) && sim3.u == u
+
     # Derived statistics live next to the solution (numbers are stored as SVectors)
     sim.stats[:copy] = u
     @test sort(collect(keys(sim.stats))) == [:Solution, :copy]

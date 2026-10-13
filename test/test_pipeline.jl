@@ -85,6 +85,13 @@ end
     @test length(tasks) == 4 && length(grid_indices) == 4
     @test [t[:Ns] for t in tasks] == [(20, 15), (40, 15), (20, 30), (40, 30)]
     @test all(t[:Ns] isa Tuple{Int, Int} for t in tasks)
+    # `__0` is not a tuple entry: the key is an ordinary (here absent) parameter
+    tasks0, _ = generate_method_tasks(base_params, [:Ns__0], [[1, 2]])
+    @test all(t -> t == base_params, tasks0)
+
+    # `:ignore` drops shared keys but is not itself a parameter (so it is not hashed)
+    ign = assemble_params(create_param_dict(:a => 1, :b => 2), create_method_dict(:m => Dict(:c => 3, :ignore => [:b])), :m)
+    @test ign == create_param_dict(:a => 1, :c => 3)
 
     shared = create_param_dict(:Ns => (10, 10), :cfl => 0.5, :sim_func_name => :dummy_tuple_solver)
     methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"))

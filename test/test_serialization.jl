@@ -23,6 +23,15 @@
     @test isequal(str2val("Float64[1.0, NaN]"), [1.0, NaN])
     @test str2val("Val{:x}()") === Val(:x)
     @test str2val("Symbol(\"a b\")") === Symbol("a b")
+    @test val2str('a') == "'a'" && str2val(val2str('a')) === 'a'
+    @test str2val(val2str(['a', 'b'])) == ['a', 'b']
+    # Multidimensional arrays keep their shape (vectors are written as before)
+    @test val2str([1 2; 3 4]) == "reshape(Int64[1, 3, 2, 4], (2, 2))"
+    @test str2val(val2str([1 2; 3 4])) == [1 2; 3 4]
+    @test str2val(val2str(zeros(2, 1, 3))) == zeros(2, 1, 3)
+    # Integers beyond Int64/UInt64 are parsed as numbers, not strings
+    @test str2val(val2str(big(2)^100)) == big(2)^100
+    @test str2val(val2str(typemax(Int128))) === typemax(Int128)
 
     # Numeric expressions typed into a UI
     @test str2val("2π") ≈ 2π
@@ -54,6 +63,12 @@ end
     @test clean[:nothing_val] === nothing
     @test calculate_hash(clean) == calculate_hash(p)
     @test calculate_hash(get_clean_params(clean)) == calculate_hash(p)
+
+    # Different values never share a hash (Chars used to become the type `Char`, matrices lost their shape)
+    @test get_clean_params(create_param_dict(:c => 'a'))[:c] === 'a'
+    @test calculate_hash(create_param_dict(:c => 'a')) != calculate_hash(create_param_dict(:c => 'b'))
+    @test get_clean_params(create_param_dict(:m => [1 2; 3 4]))[:m] == [1 2; 3 4]
+    @test calculate_hash(create_param_dict(:m => [1 2; 3 4])) != calculate_hash(create_param_dict(:m => [1, 3, 2, 4]))
 
     # The hash format is stable (regression values), so stored data is found again across sessions
     @test calculate_hash(create_param_dict(:N => 50, :cfl => 0.5, :scheme => "upwind")) ==

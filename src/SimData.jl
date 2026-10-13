@@ -173,14 +173,16 @@ end
 
 # Derived statistics are stored as given (numbers are converted to SVectors); use `add_stat!`
 # to also record the dimensions a statistic keeps.
-function Base.setindex!(v::StatsView{M, T}, value, key::Symbol) where {M, T}
+function Base.setindex!(v::StatsView, value, key::Symbol)
     if key === :Solution
         _set_solution!(v.data, value)
     else
-        _raw_stats(v.data)[key] = _stat_value(value, Val(M), T)
+        _raw_stats(v.data)[key] = _stat_value(v.data, value)
     end
     return v
 end
+
+_stat_value(::AbstractSimData{D, DS, M, T}, value) where {D, DS, M, T} = _stat_value(value, Val(M), T)
 
 function Base.delete!(v::StatsView, key)
     key === :Solution && throw(ArgumentError(":Solution is the dataset's `u` field and cannot be removed."))
@@ -225,7 +227,7 @@ function Base.setproperty!(data::_SimDataTypes, name::Symbol, value)
         raw = fieldtype(typeof(data), :stats)()
         solution = nothing
         for (k, v) in value
-            Symbol(k) === :Solution ? (solution = v) : (raw[Symbol(k)] = v)
+            Symbol(k) === :Solution ? (solution = v) : (raw[Symbol(k)] = _stat_value(data, v))
         end
         solution === nothing || _set_solution!(data, solution)
         setfield!(data, :stats, raw)

@@ -211,6 +211,11 @@ Extra `metadata` entries are stored as top-level keys of the file.
 """
 function save_sim_data(sim_data::AbstractSimData; overwrite::Bool = false, verbose::Bool = true,
                        metadata::AbstractDict = Dict{String, Any}())
+    for k in keys(metadata)
+        key = string(k)
+        (key in _MANAGED_KEYS || startswith(key, "conv_")) && throw(ArgumentError(
+            "metadata key '$key' is reserved for the data file layout; choose another name"))
+    end
     normalized = _normalize_params(sim_data.params)
     empty!(sim_data.params)
     merge!(sim_data.params, normalized)

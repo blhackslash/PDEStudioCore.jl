@@ -20,13 +20,16 @@ function val2str(v; top_level::Bool = true)
         return repr(v)
     elseif isa(v, AbstractString)
         return top_level ? String(v) : repr(v)
+    elseif isa(v, AbstractChar)
+        return repr(v)
     elseif isa(v, Number) || isa(v, Type)
         return string(v)
     elseif isa(v, AbstractArray)
         T = eltype(v)
         prefix = T === Any ? "Any" : string(T)
         elements = join([val2str(x; top_level = false) for x in v], ", ")
-        return "$(prefix)[$elements]"
+        # Multidimensional arrays keep their shape (vectors are written without `reshape`).
+        return ndims(v) == 1 ? "$(prefix)[$elements]" : "reshape($(prefix)[$elements], $(val2str(size(v))))"
     elseif isa(v, Tuple)
         elements = join([val2str(x; top_level = false) for x in v], ", ")
         return length(v) == 1 ? "($elements,)" : "($elements)"
@@ -95,13 +98,26 @@ function _literal(ex::Expr)
         return Core.apply_type(_literal_type(args[1]), map(_literal, args[2:end])...)
     elseif head === :call
         return _literal_call(args[1], map(_literal, args[2:end]))
+    elseif head === :macrocall && length(args) == 3 && args[3] isa String
+        # Integer literals too large for Int64/UInt64 are parsed as `@int128_str "..."` etc.
+        T = get(_BIG_LITERAL_MACROS, args[1], nothing)
+        T === nothing || return parse(T, args[3])
     end
     throw(_NotALiteral())
 end
 
+const _BIG_LITERAL_MACROS = Dict{Any, Type}(
+    GlobalRef(Core, Symbol("@int128_str")) => Int128,
+    GlobalRef(Core, Symbol("@uint128_str")) => UInt128,
+    GlobalRef(Core, Symbol("@big_str")) => BigInt,
+)
+
 function _literal_call(f, values::Vector)
     if f === :(=>) && length(values) == 2
         return values[1] => values[2]
+    elseif f === :reshape && length(values) == 2 && values[1] isa AbstractVector &&
+           values[2] isa Tuple{Vararg{Integer}}
+        return reshape(values[1], values[2])
     elseif f isa Symbol && haskey(_LITERAL_FUNCTIONS, f) && all(v -> v isa Number, values)
         return _LITERAL_FUNCTIONS[f](values...)
     end
@@ -122,7 +138,8 @@ end
     str2val(val_str::AbstractString)
 
 Inverse of [`val2str`](@ref): parses literals (numbers, strings, symbols, types, tuples, typed or
-untyped vectors, `Dict{K, V}(...)`, `Val{...}()`, and arithmetic on numbers such as `2π` or `1/3`).
+untyped vectors, `reshape(T[...], dims)`, `Dict{K, V}(...)`, `Val{...}()`, and arithmetic on numbers
+such as `2π` or `1/3`).
 Anything else is returned as a (cleaned) string. Arbitrary code is never evaluated.
 """
 function str2val(val_str::AbstractString)
