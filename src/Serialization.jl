@@ -126,7 +126,7 @@ untyped vectors, `Dict{K, V}(...)`, `Val{...}()`, and arithmetic on numbers such
 Anything else is returned as a (cleaned) string. Arbitrary code is never evaluated.
 """
 function str2val(val_str::AbstractString)
-    s = strip(val_str)
+    s = strip(String(val_str))  # a plain String: the parser cannot iterate every AbstractString (e.g. lazy CSV strings)
     (s == "<empty>" || isempty(s)) && return ""
     try
         return _literal(Meta.parse(s))

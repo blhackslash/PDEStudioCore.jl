@@ -255,7 +255,7 @@ function _native_and_shape(path::AbstractString)
     return jldopen(path, "r") do file
         (haskey(file, "native") && haskey(file, "shape")) || throw(ArgumentError(
             "$(basename(path)) was written by an older PDEStudioCore version (no \"native\"/\"shape\" metadata). " *
-            "Re-run it with `run_all_simulations(config; force_overwrite = true)` or delete it."))
+            "Run its configuration again (`run_all_simulations` recomputes outdated files) or delete it."))
         return file["native"], Tuple(file["shape"])
     end
 end
@@ -331,14 +331,22 @@ loaded without recomputation, exists on disk.
 does_sim_data_exist(params::AbstractDict) = does_sim_data_exist(params, Val(:raw))
 does_sim_data_exist(params::AbstractDict, kind::Symbol, args...) = does_sim_data_exist(params, Val(kind), args...)
 
+# A file of this version: native data plus the metadata loading relies on. Files written by earlier versions
+# count as missing, so the pipeline recomputes (and replaces) them instead of failing on them.
+function _is_current_file(path::AbstractString)
+    ok, has_raw = jldopen(f -> (haskey(f, "raw") && haskey(f, "native") && haskey(f, "shape"), haskey(f, "raw")), path, "r")
+    has_raw && !ok && @info "$(basename(path)) was written by an older PDEStudioCore version; it is recomputed."
+    return ok
+end
+
 function does_sim_data_exist(params::AbstractDict, ::Val{:raw})
     path = _find_file(params)
-    return path !== nothing && _has_key(path, "raw")
+    return path !== nothing && _is_current_file(path)
 end
 
 function does_sim_data_exist(params::AbstractDict, ::Val{:eulerian}, res::Tuple)
     path = _find_file(params)
-    path === nothing && return false
+    (path === nothing || !_is_current_file(path)) && return false
     _has_key(path, get_conv_key(res)) && return true
     native, shape = _native_and_shape(path)
     native === :eulerian || return false
@@ -347,7 +355,7 @@ end
 
 function does_sim_data_exist(params::AbstractDict, ::Val{:lagrangian})
     path = _find_file(params)
-    path === nothing && return false
+    (path === nothing || !_is_current_file(path)) && return false
     native, _ = _native_and_shape(path)
     return _has_key(path, native === :lagrangian ? "raw" : "conv_L")
 end

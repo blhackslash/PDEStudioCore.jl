@@ -2,7 +2,7 @@
 
 This is a **breaking release**. There are no deprecated aliases: old names raise errors, so every place that needs
 changing is found on the first run. Parameter hashes are unchanged, so data files are still *found*, but files
-written by earlier versions lack the metadata this version needs; re-run them (see [Data files](#Data-files)).
+written by earlier versions lack the metadata this version needs and are recomputed (see [Data files](#Data-files)).
 
 ## `SimulationConfig` fields and keywords
 
@@ -54,9 +54,9 @@ The integration measure is derived from the axes, not from overridden bounds; th
 
 ## Data files
 
-Files now carry metadata (`native`, `shape`) that loading relies on. Loading a file written by an earlier version
-raises an `ArgumentError` naming the file; re-run with `run_all_simulations(config; force_overwrite = true)` or
-delete it (`delete_sim_data`). The undocumented internal helpers `_normalize_spatial_res`, `_get_lsim_bounds` and
+Files now carry metadata (`native`, `shape`) that loading relies on. Files written by an earlier version count as
+missing: `run_all_simulations` recomputes and replaces them (with an info message), and `does_sim_data_exist` returns
+`false` for them. Loading one directly raises an `ArgumentError` naming the file. The undocumented internal helpers `_normalize_spatial_res`, `_get_lsim_bounds` and
 `_get_native_type` were removed.
 
 ## Behaviour changes
