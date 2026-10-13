@@ -1,88 +1,110 @@
 # PDEStudioCore.jl
 
-**PDEStudioCore.jl** is a robust, headless-safe Julia backend engineered for the execution, management, and statistical analysis of Partial Differential Equation (PDE) simulations. 
+**PDEStudioCore.jl** is a headless-safe Julia backend for running, storing and analysing Partial Differential Equation (PDE) simulations.
 
-Designed with reproducible academic research in mind, it provides a unified framework for generating strictly typed, precision-agnostic Eulerian and Lagrangian datasets. It features deterministic cryptographic hashing for simulation parameters, automated disk caching, and a highly optimized multithreaded statistical integration pipeline. 
+Designed with reproducible research in mind, it provides strictly typed, precision-agnostic Eulerian and Lagrangian datasets of any dimension, deterministic parameter hashing with atomic on-disk caching, declarative parameter sweeps and a multithreaded statistics pipeline.
 
 ---
 
 ## 🏗️ Core Data Structures
 
-All simulation outputs are wrapped in strongly typed structures that strictly map the mathematical domains of your data.
+All simulation outputs are wrapped in strongly typed structures that map the mathematical domain of the data.
 
-| Type | Description | Dimensions |
+| Type | Description | Main fields |
 | :--- | :--- | :--- |
-| `ESimData{D, DS, M, T}` | Represents Eulerian grid data (fields on a static mesh). | `D` = Total Spacetime, `DS` = Spatial |
-| `LSimData{D, DS, M, T}` | Represents Lagrangian particle data (scattered points moving). | `M` = Field Components, `T` = Precision |
+| `ESimData{D, DS, M, T}` | Eulerian data: fields on a structured tensor grid. | `axes`, `u`, `stats` |
+| `LSimData{D, DS, M, T}` | Lagrangian data: particles recorded at discrete times. | `t`, `x`, `u`, `stats` |
 
-*Example: An Eulerian simulation in 2D space over time with 4 state variables in Float64 precision is typed as `ESimData{3, 2, 4, Float64}`.*
+`D` is the number of spacetime dimensions, `DS` the number of spatial dimensions (`D == DS` for static data), `M` the number of field components and `T` the floating point precision.
+
+*Example: an Eulerian simulation in 2D space over time with 4 state variables in `Float64` precision is an `ESimData{3, 2, 4, Float64}`.*
+
+Datasets of any dimension are created with a single function, [`create_sim_data`](@ref):
+
+```julia
+create_sim_data(x, u, t, params)               # 1D + time
+create_sim_data((x, y), u, t, params)          # 2D + time
+create_sim_data((x, y, z), ρ, params)          # static 3D field
+create_sim_data(x_traj, u_traj, t, params)     # particles over time
+```
+
+### The solution is a statistic, by construction
+
+`data.stats` is a dictionary view ([`StatsView`](@ref)) in which `:Solution` is always present and always *is* `data.u`:
+
+```julia
+sim = create_sim_data(x, u, t, params)
+sim.stats[:Solution] === sim.u    # true: the same array, never a copy
+sim.u = u_new                     # :Solution follows automatically
+keys(sim.stats)                   # :Solution plus every derived statistic
+```
+
+This holds for every dataset, however it was produced: `create_sim_data`, the `ESimData`/`LSimData` constructors, conversions, resampling, reference generation or loading from disk. `:Solution` cannot be deleted, is never stored twice on disk, and its kept dimensions are always all dimensions.
 
 ---
 
 ## 🧩 The Simulation Configuration (`SimulationConfig`)
 
-The `SimulationConfig` is the central orchestration structure of the package—the definitive blueprint for your simulation runs. 
+[`SimulationConfig`](@ref) is the blueprint of a batch of runs. It binds your solver (referenced by name) to its parameter space:
 
-It acts as the binding layer that connects your custom numerical solver to your parameter space. By encapsulating the core simulation function alongside the baseline parameters, method-specific overrides, and multi-dimensional parameter sweeps, the `SimulationConfig` ensures that every pipeline execution is strictly defined, fully reproducible, and structurally ready for automated parallel evaluation.
+| Field | Meaning |
+| :--- | :--- |
+| `shared` | Baseline parameters of every run (including `:sim_func_name`, the solver's name). |
+| `methods` | Per-method parameter overrides (e.g. `:upwind`, `:lax_wendroff`). |
+| `defaults` | The methods that are executed (default: all methods). |
+| `varied` | The parameter sweep; the Cartesian product of all vectors is run. |
+| `reference` | Name of a reference factory `params -> (x -> u_exact)` used for error statistics. |
+| `postprocess` | Name of a function `data -> Bool` run on every dataset (`true` saves it). |
+| `sources` | Files included into the target module before running. |
+
+```julia
+config = SimulationConfig(shared, methods; varied = Dict(:N => [50, 100, 200]))
+run_all_simulations(config; calculate_stats = true)
+```
 
 ---
 
 ## 📖 The Configuration Dictionaries
 
-To cleanly manage complex multi-dimensional parameter sweeps without memory allocations within the `SimulationConfig`, the package uses three distinct strictly-typed dictionary formats:
+*   **`ParamDict` (`Dict{Symbol, Any}`):** the flat, resolved parameters of a single run (e.g. `:N => 100`, `:cfl => 0.2`). It is passed to your solver, and its normalised content is hashed to locate the run on disk.
+*   **`MethodDict` (`Dict{Symbol, ParamDict}`):** method-specific overrides on top of the shared parameters. `:ignore => [:key1, :key2]` removes shared keys for one method.
+*   **`VariedDict` (`Dict{Symbol, Vector}`):** the sweep definition. Keys such as `:Ns__x` sweep a single entry of a tuple parameter.
 
-*   **`ParamDict` (`Dict{Symbol, Any}`):** The fundamental parameter dictionary passed into your custom simulation function. It holds the flat, resolved list of parameters for a single run (e.g., `:N => 100`, `:CFL => 0.2`).
-*   **`MethodDict` (`Dict{Symbol, ParamDict}`):** Contains method-specific overrides. It allows you to define a shared baseline `ParamDict`, and dynamically swap parameters for different numerical methods (e.g., overriding `:solver_type` for an `:implicit` vs. an `:explicit` scheme). 
-*   **`VariedDict` (`Dict{Symbol, Vector}`):** Defines the parameter grid. The backend automatically computes the Cartesian product of all vectors defined here and executes the pipeline across every combination.
+String keys are accepted everywhere and converted to `Symbol`s.
 
 ---
 
 ## ⚙️ Main API Functions
 
-*   **`run_all_simulations(config::SimulationConfig; kwargs...)`:** The main workhorse. It unpacks the `VariedDict`, applies `MethodDict` overrides, and handles secure cryptographic disk-caching. If a simulation with the exact structural parameters already exists on disk, it is safely bypassed to conserve compute hours.
-*   **`calculate_all_stats!(sim_data, ref_func)`:** Evaluates registered statistics (Mass, L1/L2 errors, etc.) dynamically. It uses the `ref_func` to generate a perfect pointwise analytical cache, evaluating exact error metrics across both uniform Eulerian grids and scattered Lagrangian fields.
+*   **[`run_all_simulations`](@ref)`(config; kwargs...)`:** runs every task of the sweep that is not on disk yet, then (optionally) computes statistics and runs your post-processing. Failures of single tasks are logged and do not abort the batch.
+*   **[`generate_tasks`](@ref)`(config)`:** the parameter sets of a sweep, e.g. to load its results: `[load_sim_data(p) for p in generate_tasks(config)]`.
+*   **[`load_sim_data`](@ref)`(params[, kind, res])`:** loads the native data, or an Eulerian/Lagrangian representation that is converted (and optionally cached) on demand.
+*   **[`calculate_all_stats!`](@ref)`(data, ref_func)`:** evaluates all registered statistics (mass, L1/L2 errors, …) against an exact reference, on grids and on particles.
 
 ---
 
 ## 📊 Custom Statistics
 
-The package allows you to easily inject and evaluate custom metrics across massive datasets.
-
-### 1. Integrated-Out Statistics (via `calc_stat` overload)
-To have the backend automatically integrate a custom metric across specific dimensions (e.g., evaluating a spatial error profile at every time step), overload the `calc_stat` function:
+Register a statistic with the dimensions it *keeps* and implement [`calc_stat`](@ref) for it; the backend integrates out the others:
 
 ```julia
-# Overload for your custom metric
-function PDEStudioCore.calc_stat(::Val{:my_custom_error}, fixed_coords, u, ana, domain::DomainInfo)
-    measure = PDEStudioCore.get_integration_measure(:my_custom_error, domain)
-    return sum(abs.(u .- ana) .* measure)
+register_stat!(:my_error, :time)   # one value per time step
+
+function PDEStudioCore.calc_stat(::Val{:my_error}, fixed_coords, u, ana, domain::DomainInfo)
+    return sum(abs.(u .- ana)) * get_integration_measure(:my_error, domain)
 end
-
-# Register the statistic and declare which dimensions to retain
-PDEStudioCore.register_stat!(:my_custom_error, :time)
 ```
-You can explicitly define a vector of dimension symbols to keep (e.g., `[:x, :y]`), or use the built-in aliases: `:all` (full tensor), `:space` (integrates out time), or `:time` (integrates out space).
 
-### 2. Complete Custom Statistics
-If your statistic bypasses standard integration and you want to append a pre-calculated array directly to the dataset, use `add_stat!`:
-
-```julia
-# Bypasses calc_stat and directly inserts the stat into the dictionary and registry
-PDEStudioCore.add_stat!(sim_data, :custom_metric, my_value_array, :time)
-```
+Pre-computed values are attached with [`add_stat!`](@ref). See [Statistics and Analytics](statistics.md) for details.
 
 ---
 
-## 🛠️ Technical Details & Dimension Keys (`dim_keys`)
+## 🛠️ Dimension Keys (`dim_keys`)
 
-A core part of the architecture is the `dim_keys` field inside `DomainInfo`. 
-*   **Identification:** The `dim_keys` tuple acts as the *sole identifier* for your axes. The value (e.g., `:x`, `:t`) and the order matter strictly for interpolation, statistical slicing, and plotting.
-*   **Consistency:** While you can set these keys freely to match your physical model (e.g., `(:r, :theta, :t)`), you should **never** change the layout of a tuple for a specific model paradigm once data has been serialized to disk, as this breaks backwards compatibility.
+The `dim_keys` tuple of a [`DomainInfo`](@ref) is the *sole identifier* of the axes, e.g. `(:x, :y, :t)`. Names and order matter for interpolation, statistical slicing and plotting. The time axis, if present, is always the last one. You can name the axes freely (`dims = (:r, :θ)`), but keep the layout of a model stable once data has been written to disk.
 
 ---
 
 ## 🚀 Examples
 
-To help you get started with the `PDEStudioCore` pipeline, we provide complete, runnable examples in the `examples/` directory.
-
-*   **`examples/dummy.jl`**: A minimal, self-contained quick-start script. It demonstrates how to set up a shared parameter pool, define numerical methods, sweep over time-step sizes, and run a mock 1D wave simulation.
+Runnable examples live in the `examples/` directory of the repository; the [Simulation Config](simulation_config.md) page walks through a complete setup step by step. If you are upgrading, see the [Migration Guide](migration.md).

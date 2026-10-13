@@ -1,252 +1,234 @@
-# --- 1. Type Aliases ---
+# ==============================================================================
+# --- Type aliases & global state ---
+# ==============================================================================
+
 """
     ParamDict
 
-A type alias for `Dict{Symbol, Any}`. It stores a flat, resolved list of simulation parameters for a single pipeline execution.
+Alias for `Dict{Symbol, Any}`: the flat, resolved parameters of a single simulation run.
+Its normalised content is hashed to locate the run on disk (see [`calculate_hash`](@ref)).
 """
 const ParamDict = Dict{Symbol, Any}
 
 """
     MethodDict
 
-A type alias for `Dict{Symbol, ParamDict}`. It maps specific numerical methods or solver names (e.g., `:upwind`) to their localized parameter overrides.
+Alias for `Dict{Symbol, ParamDict}`: maps method names (e.g. `:upwind`) to their parameter overrides.
 """
 const MethodDict = Dict{Symbol, ParamDict}
 
 """
     VariedDict
 
-A type alias for `Dict{Symbol, Vector}`. It defines the parameter space for grid sweeps; the backend will automatically execute the Cartesian product of all vectors provided here.
+Alias for `Dict{Symbol, Vector}`: the parameter sweep. The pipeline runs the Cartesian product of
+all vectors. Keys of the form `:Ns__x`/`:Ns__1` sweep a single entry of the tuple parameter `:Ns`.
 """
 const VariedDict = Dict{Symbol, Vector}
 
-const _SAVE_ROOT_PATH = Ref{String}(pwd())
+"""
+    StatRegistry
+
+Alias for `Dict{Symbol, Union{Symbol, Vector{Symbol}}}`: maps a statistic name to the dimensions
+it keeps (`:all`, `:space`, `:time`, a single dimension name, or a vector of dimension names).
+"""
+const StatRegistry = Dict{Symbol, Union{Symbol, Vector{Symbol}}}
+
+# Initialised in `__init__` so that the precompile-time values are never baked into the image.
+const _SAVE_ROOT_PATH = Ref{String}("")
 const _TARGET_MODULE = Ref{Module}(Main)
+const _ACTIVE_STAT_REGISTRY = Ref{StatRegistry}(StatRegistry())
 
 """
     set_target_module!(target_module::Module)
 
-Sets the global reference module where the backend will search when dynamically resolving simulation and analytical reference functions by their `Symbol` names.
+Sets the module in which solver, reference and post-processing functions are looked up by name.
 """
 set_target_module!(target_module::Module) = (_TARGET_MODULE[] = target_module)
+
+"""
+    get_target_module()
+
+Returns the module in which functions referenced by name are resolved (default: `Main`).
+"""
 get_target_module() = _TARGET_MODULE[]
 
-# --- 2. Explicit Creator Functions ---
-# Converts any generic iterator or mixed string/symbol inputs into strictly typed Symbol-keyed dictionaries
+# ==============================================================================
+# --- Dictionary creators ---
+# ==============================================================================
 
-# ParamDict Creators
+_to_paramdict(d) = ParamDict(Symbol(k) => v for (k, v) in d)
+
 """
     create_param_dict(kv...)
 
-Converts generic iterators, pairs, or keyword arguments into a strictly typed `ParamDict` (`Dict{Symbol, Any}`). 
-This guarantees type stability across the simulation backend.
+Builds a [`ParamDict`](@ref) from pairs or any key-value iterable; `String` keys become `Symbol`s.
 """
-create_param_dict(kv::Pair...) = ParamDict(Symbol(k) => v for (k, v) in kv)
-create_param_dict(kv) = ParamDict(Symbol(k) => v for (k, v) in kv) 
+create_param_dict(kv::Pair...) = _to_paramdict(kv)
+create_param_dict(kv) = _to_paramdict(kv)
 create_param_dict() = ParamDict()
 
-# MethodDict Creators
 """
     create_method_dict(kv...)
 
-Converts generic inputs into a strictly typed `MethodDict`, automatically parsing nested dictionaries into `ParamDict`s.
+Builds a [`MethodDict`](@ref); nested dictionaries are converted to [`ParamDict`](@ref)s.
 """
-create_method_dict(kv::Pair...) = MethodDict(Symbol(k) => ParamDict(Symbol(ki) => vi for (ki, vi) in v) for (k, v) in kv)
-create_method_dict(kv) = MethodDict(Symbol(k) => ParamDict(Symbol(ki) => vi for (ki, vi) in v) for (k, v) in kv)
+create_method_dict(kv::Pair...) = MethodDict(Symbol(k) => _to_paramdict(v) for (k, v) in kv)
+create_method_dict(kv) = MethodDict(Symbol(k) => _to_paramdict(v) for (k, v) in kv)
 create_method_dict() = MethodDict()
 
-# VariedDict Creators
 """
     create_varied_dict(kv...)
 
-Converts generic inputs into a strictly typed `VariedDict` for defining parameter sweeps.
+Builds a [`VariedDict`](@ref) for a parameter sweep. Ranges are collected into vectors.
 """
-create_varied_dict(kv::Pair...) = VariedDict(Symbol(k) => v for (k, v) in kv)
-create_varied_dict(kv) = VariedDict(Symbol(k) => v for (k, v) in kv)
+create_varied_dict(kv::Pair...) = _to_varieddict(kv)
+create_varied_dict(kv) = _to_varieddict(kv)
 create_varied_dict() = VariedDict()
 
+function _to_varieddict(kv)
+    out = VariedDict()
+    for (k, v) in kv
+        v isa AbstractVector || throw(ArgumentError(
+            "the swept values of :$k must be a vector (or range), got $(typeof(v))"))
+        out[Symbol(k)] = collect(v)
+    end
+    return out
+end
 
 # ==============================================================================
-# --- 1. Abstract Hierarchy & Metadata ---
+# --- Global statistic registry ---
 # ==============================================================================
 
-# 1. Abstract Hierarchy (Now with T)
+_registry_value(v::Symbol) = v
+_registry_value(v::AbstractString) = Symbol(v)
+_registry_value(v) = Symbol[Symbol(x) for x in v]
+
 """
-    AbstractSimData{D, DS, M, T <: Real}
+    get_stat_registry()
 
-The root abstract type for all simulation data structures in the backend. 
-- `D`: Total spacetime dimensions.
-- `DS`: Spatial dimensions.
-- `M`: Number of field components.
-- `T`: The numeric precision (e.g., `Float64`).
+Returns the active global statistic registry (a [`StatRegistry`](@ref)). Datasets copy it on creation
+and [`calculate_all_stats!`](@ref) brings them back in sync with it.
 """
-abstract type AbstractSimData{D, DS, M, T <: Real} end
+get_stat_registry() = _ACTIVE_STAT_REGISTRY[]
 
-struct NoSimData <: AbstractSimData{0, 0, 0, Real} end
+"""
+    set_stat_registry!(new_registry::AbstractDict)
 
-const AbstractStatTensor{M, T} = Union{
-    SVector{M, T},
-    AbstractArray{SVector{M, T}},
-    Vector{Vector{SVector{M, T}}} 
-}
-const StatDict{M, T} = Dict{Symbol, AbstractStatTensor{M, T}} 
+Replaces the global statistic registry with a copy of `new_registry`.
+"""
+function set_stat_registry!(new_registry::AbstractDict)
+    _ACTIVE_STAT_REGISTRY[] = StatRegistry(Symbol(k) => _registry_value(v) for (k, v) in new_registry)
+    @info "Global statistic registry has been overwritten."
+    return get_stat_registry()
+end
 
-# 2. Modernized DomainInfo (Using SVector and T)
+"""
+    reset_stat_registry!()
+
+Clears the global statistic registry.
+"""
+function reset_stat_registry!()
+    empty!(_ACTIVE_STAT_REGISTRY[])
+    @info "Global statistic registry has been cleared."
+    return get_stat_registry()
+end
+
+"""
+    register_stat!(name::Symbol, kept_dims)
+
+Registers a statistic evaluated through a [`calc_stat`](@ref) overload. `kept_dims` lists the dimensions
+that are *retained*; all others are integrated out. Valid values: `:all`, `:space`, `:time`, a single
+dimension name (e.g. `:x`) or a vector of dimension names (e.g. `[:x, :t]`; `Symbol[]` gives a scalar).
+
+`:Solution` is always registered (keeping all dimensions); registering it is a no-op.
+
+```julia-repl
+julia> register_stat!(:l2error, :time)
+```
+"""
+function register_stat!(name::Symbol, kept_dims::Union{Symbol, AbstractString, AbstractVector})
+    name === :Solution && return :all
+    value = _registry_value(kept_dims)
+    _ACTIVE_STAT_REGISTRY[][name] = value
+    @info "Registered statistic :$name keeping dimensions: $value"
+    return value
+end
+
+"""
+    delete_stat!(name::Symbol)
+    delete_stat!(data::AbstractSimData, name::Symbol)
+
+Removes a statistic from the global registry, or removes a statistic (value and registry entry)
+from a single dataset. `:Solution` cannot be removed.
+"""
+function delete_stat!(name::Symbol)
+    delete!(_ACTIVE_STAT_REGISTRY[], name)
+    return get_stat_registry()
+end
+
+# ==============================================================================
+# --- Domain metadata ---
+# ==============================================================================
+
 """
     DomainInfo{D, T <: Real}
 
-Stores metadata defining the mathematical bounding box and dimension identifiers of the simulation.
+Metadata describing the bounding box and dimension layout of a dataset.
 
 # Fields
-- `dim_keys::Tuple{Vararg{Symbol, D}}`: The strict ordered identifiers for the axes (e.g., `(:x, :y, :t)`).
-- `mins::SVector{D, T}`: The spatial/temporal minimum boundaries of the domain.
-- `maxs::SVector{D, T}`: The spatial/temporal maximum boundaries of the domain.
-- `spacing::SVector{D, T}`: The uniform spacing (dx, dy, dt) along each axis.
-- `time_dim::Union{Nothing, Symbol}`: Explicitly identifies which dimension acts as the time vector.
-- `stat_registry::Dict`: A local registry tracking which custom statistical dimensions are retained for this specific dataset.
+- `dim_keys::NTuple{D, Symbol}`: ordered axis identifiers, e.g. `(:x, :y, :t)`.
+- `mins`, `maxs::SVector{D, T}`: bounding box of the domain.
+- `spacing::SVector{D, T}`: mean node spacing per axis (used as integration measure).
+- `time_dim::Union{Nothing, Symbol}`: the time axis (always the last one), or `nothing` for static data.
+- `stat_registry::StatRegistry`: the dimensions kept by each statistic of this dataset.
+
+The constructor validates the layout, copies the registry (datasets never share registries) and
+always registers `:Solution => :all`.
 """
 struct DomainInfo{D, T <: Real}
-    dim_keys::Tuple{Vararg{Symbol, D}}
+    dim_keys::NTuple{D, Symbol}
     mins::SVector{D, T}
     maxs::SVector{D, T}
     spacing::SVector{D, T}
-    time_dim::Union{Nothing,Symbol}
-    stat_registry::Dict{Symbol, Union{Symbol, Vector{Symbol}}} 
-end
+    time_dim::Union{Nothing, Symbol}
+    stat_registry::StatRegistry
 
-# ==============================================================================
-# --- 2. D-Dimensional Data Structures ---
-# ==============================================================================
-
-"""
-    ESimData{D, DS, M, T} <: AbstractSimData{D, DS, M, T}
-
-Represents Eulerian grid data. The mathematical fields are defined on a static, uniform mesh.
-
-# Fields
-- `params::ParamDict`: The strictly typed parameters used to generate this data.
-- `domain::DomainInfo{D, T}`: The domain metadata bounding the grid.
-- `axes::NTuple{D, Vector{T}}`: The exact coordinate vectors for every dimension.
-- `u::Array{SVector{M, T}, D}`: The dense, multidimensional grid of simulation state vectors.
-- `stats::StatDict{M, T}`: The dictionary containing calculated statistical arrays (like error metrics or mass).
-"""
-mutable struct ESimData{D, DS, M, T} <: AbstractSimData{D, DS, M, T}
-    params::ParamDict
-    domain::DomainInfo{D, T}
-    axes::NTuple{D, Vector{T}}
-    u::Array{SVector{M, T}, D}
-    stats::StatDict{M, T}
-end
-
-"""
-    LSimData{D, DS, M, T} <: AbstractSimData{D, DS, M, T}
-
-Represents Lagrangian particle data. The fields are defined on scattered points moving freely through space over time.
-
-# Fields
-- `params::ParamDict`: The strictly typed parameters used to generate this data.
-- `domain::DomainInfo{D, T}`: The domain metadata bounding the global space.
-- `t::Vector{T}`: The discrete time steps at which particles were recorded.
-- `x::Vector{Vector{SVector{DS, T}}}`: The spatial coordinates of the particles at each time step.
-- `u::Vector{Vector{SVector{M, T}}}`: The state vectors of the particles at each time step.
-- `stats::StatDict{M, T}`: The dictionary containing calculated statistical arrays.
-"""
-mutable struct LSimData{D, DS, M, T} <: AbstractSimData{D, DS, M, T}
-    params::ParamDict
-    domain::DomainInfo{D, T}
-    t::Vector{T}
-    x::Vector{Vector{SVector{DS, T}}}
-    u::Vector{Vector{SVector{M, T}}}
-    stats::StatDict{M, T} 
-end
-
-"""
-    SimulationConfig{F, A, P}
-
-The central orchestration structure defining a complete simulation pipeline run. 
-It encapsulates the core simulation function alongside the baseline parameters, method-specific overrides, and multi-dimensional parameter sweeps.
-
-# Fields
-- `reference_name::Union{Symbol, Nothing}`: The registered name of the reference function.
-- `post_process_name::Union{Symbol, Nothing}`: The registered name of the post-processing function.
-- `shared_params::ParamDict`: The baseline parameters shared across all pipeline runs.
-- `methods_dict::MethodDict`: Method-specific parameter overrides.
-- `active_methods::Vector{Symbol}`: A list of the specific methods from the `methods_dict` to execute.
-- `varied_params::VariedDict`: The parameter grid to sweep over (executes the Cartesian product).
-- `source_files::Vector{String}`: Optional source files to track for reproducibility.
-"""
-mutable struct SimulationConfig
-    reference_name::Union{Symbol, Nothing}
-    post_process_name::Union{Symbol, Nothing}
-    shared_params::ParamDict
-    methods_dict::MethodDict
-    active_methods::Vector{Symbol}
-    varied_params::VariedDict
-    source_files::Vector{String}
-end
-
-"""
-    SimulationConfig(shared, methods, defaults; kwargs...)
-
-Constructs a strictly typed `SimulationConfig`. The core simulation function should be specified via the `:sim_func_name` key directly within the `shared` or `methods` dictionaries.
-Automatically converts all loosely typed dictionary inputs into `ParamDict`s, `MethodDict`s, and `VariedDict`s.
-"""
-function SimulationConfig(
-    shared::Dict, 
-    methods::Dict, 
-    defaults::Vector;
-    varied_params::Dict = create_varied_dict(),
-    ref_func_name::Union{String, Symbol, Nothing} = nothing,
-    post_process_name::Union{String, Symbol, Nothing} = nothing,
-    source_files::Union{<:AbstractString, Vector{String}} = String[]
-)
-    # Convert generic dictionaries to enforced Symbol-keyed dictionaries
-    shared_sym   = ParamDict(Symbol(k) => v for (k, v) in shared)
-    methods_sym  = MethodDict(Symbol(k) => ParamDict(Symbol(ki) => vi for (ki, vi) in v) for (k, v) in methods)
-    varied_sym   = VariedDict(Symbol(k) => v for (k, v) in varied_params)
-    defaults_sym = Symbol.(defaults)
-    
-    ref_name_sym = isnothing(ref_func_name) ? nothing : Symbol(ref_func_name)
-    post_name_sym = isnothing(post_process_name) ? nothing : Symbol(post_process_name)
-    src_files = source_files isa AbstractString ? [String(source_files)] : String.(source_files)
-
-    return SimulationConfig(
-        ref_name_sym, post_name_sym, 
-        shared_sym, methods_sym, defaults_sym, varied_sym, src_files
-    )
-end
-
-"""
-    resolve_dynamic_function(func_name::Union{Symbol, Nothing}, provided_func::Union{Function, Nothing} = nothing)
-
-A pure lookup mechanism that fetches a compiled function object directly from the registered target module namespace using its `Symbol` name.
-
-# Arguments
-- `func_name`: The symbolic name of the function to fetch.
-- `provided_func`: An optional fallback; if a compiled function is passed here, it bypasses the lookup and returns it directly.
-
-# Returns
-- `Function`: The resolved function object, or `nothing` if the lookup fails.
-"""
-function resolve_dynamic_function(
-    func_name::Union{Symbol, Nothing}, 
-    provided_func::Union{Function, Nothing} = nothing
-)
-    target_module = _TARGET_MODULE[]
-    
-    if !isnothing(provided_func)
-        return provided_func
-    end
-    
-    if isnothing(func_name) || func_name === :none
-        return nothing 
-    end
-    
-    try
-        # Native symbol lookup directly from memory
-        return getglobal(target_module, func_name)
-    catch e
-        @warn "Failed to resolve function '$func_name' from $target_module."
-        return nothing
+    function DomainInfo{D, T}(dim_keys, mins, maxs, spacing, time_dim::Union{Nothing, Symbol},
+                              stat_registry::AbstractDict = get_stat_registry()) where {D, T <: Real}
+        length(dim_keys) == D || throw(ArgumentError("expected $D dimension keys, got $(length(dim_keys))"))
+        dkeys = ntuple(i -> Symbol(dim_keys[i]), Val(D))
+        allunique(dkeys) || throw(ArgumentError("dimension keys must be unique, got $dkeys"))
+        if time_dim !== nothing && (D == 0 || dkeys[D] !== time_dim)
+            throw(ArgumentError("the time dimension :$time_dim must be the last dimension key, got $dkeys"))
+        end
+        registry = StatRegistry(Symbol(k) => _registry_value(v) for (k, v) in stat_registry)
+        registry[:Solution] = :all
+        return new{D, T}(dkeys, SVector{D, T}(mins), SVector{D, T}(maxs), SVector{D, T}(spacing),
+                         time_dim, registry)
     end
 end
+
+function DomainInfo(dim_keys, mins, maxs, spacing, time_dim::Union{Nothing, Symbol},
+                    stat_registry::AbstractDict = get_stat_registry())
+    T = float(promote_type(eltype(collect(mins)), eltype(collect(maxs)), eltype(collect(spacing))))
+    return DomainInfo{length(dim_keys), T}(dim_keys, mins, maxs, spacing, time_dim, stat_registry)
+end
+
+"""
+    has_time(domain::DomainInfo)
+    has_time(data::AbstractSimData)
+
+`true` if the dataset is transient (has a time axis).
+"""
+has_time(domain::DomainInfo) = domain.time_dim !== nothing
+
+"""
+    get_time_dim(domain::DomainInfo)
+
+Index of the time axis within `domain.dim_keys`, or `nothing` for static data.
+"""
+get_time_dim(domain::DomainInfo) = domain.time_dim === nothing ? nothing :
+                                   findfirst(==(domain.time_dim), domain.dim_keys)
+
+# Number of spatial dimensions of a domain.
+_nspace(domain::DomainInfo{D}) where {D} = has_time(domain) ? D - 1 : D

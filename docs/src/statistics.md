@@ -1,78 +1,99 @@
 # Statistics and Analytics
 
-**PDEStudioCore.jl** features a powerful, multithreaded statistical integration pipeline. Instead of forcing you to write complex loops to average data over space or time, the backend automatically slices your multidimensional Eulerian tensors or Lagrangian particle series, executes your custom math, and saves the reduced data to disk.
+**PDEStudioCore.jl** features a multithreaded statistics pipeline. Instead of writing loops that average data over space or time, you register what a statistic keeps; the backend slices your Eulerian tensors or Lagrangian particle series accordingly, evaluates your function on every slice and stores the reduced data with the dataset.
 
-By default, the global statistics registry starts completely empty, ensuring the backend makes no assumptions about your physical model.
+Every dataset exposes its statistics through `data.stats`, a dictionary view in which `:Solution` is always present and always refers to `data.u`. Derived statistics live next to it:
+
+```julia
+data.stats[:Solution] === data.u   # true
+data.stats[:l2error]                # a derived statistic
+copy(data.stats)                    # a plain Dict snapshot
+```
+
+The global statistics registry starts empty, so the backend makes no assumptions about your model.
 
 ## 1. Loading Presets
 
-If you are working with standard physical models, you can load a predefined suite of statistics. For example, to load standard metrics for hyperbolic PDEs (like mass, L1/L2 errors, and wave heights):
+Predefined suites of statistics live in the `presets/` directory. For hyperbolic PDEs (mass, L1/L2 errors, …):
 
 ```julia
 using PDEStudioCore
-PDEStudioCore.set_stat_preset!("hyperbolic")
+set_stat_preset!("hyperbolic")
 ```
 
 ## 2. Automated Integration (via `calc_stat`)
 
-If you want to compute a metric that integrates out specific dimensions (e.g., calculating the spatial L2 error at *every* time step), you should use the automated `calc_stat` pipeline. 
-
 ### Step A: Register the Statistic
-First, register your statistic's name and define which dimensions you want to **retain**. The backend will automatically integrate out the dimensions you *do not* list here. 
 
-You can use the built-in aliases (`:all`, `:space`, `:time`) or an explicit vector of dimension symbols (e.g., `[:x, :y]`).
+Register the statistic's name and the dimensions to **retain**; all other dimensions are integrated out:
 
 ```julia
-# We want a time series, so we tell the registry to retain the :time dimension
-PDEStudioCore.register_stat!(:custom_energy, :time)
+register_stat!(:custom_energy, :time)   # one value per time step
 ```
 
+Valid kept dimensions are the aliases `:all` (pointwise field), `:space` (integrates out time), `:time` (integrates out space), a single dimension name such as `:x`, or a vector of names such as `[:x, :t]` (`Symbol[]` gives a single scalar).
+
 ### Step B: Overload `calc_stat`
-Next, write a method extending `PDEStudioCore.calc_stat` for your specific metric. The backend will automatically multithread this function across your data slices.
 
 ```julia
 function PDEStudioCore.calc_stat(::Val{:custom_energy}, fixed_coords, u, ana, domain::DomainInfo)
-    # 1. Fetch the combined scalar measure (e.g., dx * dy) for the dimensions being integrated
-    measure = PDEStudioCore.get_integration_measure(:custom_energy, domain)
-    
-    # 2. Perform your math (u and ana are pre-sliced 1D iterators)
-    return sum(abs2.(u) .* measure)
+    measure = get_integration_measure(:custom_energy, domain)   # e.g. dx * dy
+    return sum(abs2.(u)) * measure
 end
 ```
 
-**Understanding the Inputs:**
-*   `::Val{:name}`: The strict dispatch token matching your registered statistic.
-*   `fixed_coords`: The exact spatial or temporal coordinates of the slice currently being evaluated.
-*   `u`: A flat iterator containing the numerical simulation data for this specific slice.
-*   `ana`: A flat iterator containing the exact analytical reference data (or `NaN`s if no reference function was provided).
-*   `domain`: The `DomainInfo` metadata object, providing access to grid spacing and bounding boxes.
+**Arguments**
+*   `::Val{:name}`: the dispatch token of your statistic.
+*   `fixed_coords`: the coordinates of the kept dimensions for the current slice (an `SVector`).
+*   `u`: the numerical values of the slice (a flat vector of `SVector`s).
+*   `ana`: the reference values of the slice (`NaN`s if no reference is available).
+*   `domain`: the [`DomainInfo`](@ref), giving access to the spacing, bounds and registry.
+
+The function must return an `SVector` with one entry per field component.
+
+### Step C: Evaluate
+
+```julia
+calculate_all_stats!(data, ref_func)     # ref_func(x::SVector{D}) -> exact value, or nothing
+```
+
+[`calculate_all_stats!`](@ref) evaluates every statistic of the global registry that the dataset does not have yet (all of them with `force_overwrite = true`) and saves the dataset (`save = false` keeps it in memory only). Statistics registered *after* a dataset was created are picked up, and a statistic whose kept dimensions changed is recomputed. Results that are entirely `NaN` (typically errors without a reference) are dropped and remembered as evaluated, so the pipeline does not reload the data for them again; use `force_overwrite = true` after adding a reference.
+
+Converted and reference datasets (from `load_sim_data(p, :lagrangian)`, `resample_eulerian`, `generate_reference_simdata`, …) share the parameters of the native run. Their statistics are computed as usual, but they are never saved over the native data: `calculate_all_stats!` warns and keeps them in memory. Pass `save = false` for such datasets to skip the check.
+
+### Lagrangian Data
+
+On particle data, statistics can keep
+- no dimension: one value over all particles and time steps,
+- the time dimension: one value per time step,
+- all dimensions: one value per particle (`u` and `ana` are 1-tuples).
+
+Other combinations are skipped for Lagrangian data.
 
 ## 3. Direct Injection (via `add_stat!`)
 
-Sometimes, a statistic does not fit the standard integration pipeline. For example, tracking the physical execution time of your solver, memory allocations, or a complex global scalar that requires access to the entire dataset at once.
-
-For these cases, use `add_stat!`. This function attaches a raw array or scalar directly to the simulation object. 
-
-### Using `add_stat!` in Post-Processing
-The most elegant place to inject custom metrics is inside the `post_process_func` of your `SimulationConfig`. The backend runs this function immediately after standard stats are calculated.
+Some statistics do not fit the integration pipeline: the run time of a solver, a global quantity that needs the entire dataset, or values computed elsewhere. Attach them directly with [`add_stat!`](@ref), declaring the dimensions they keep:
 
 ```julia
-function my_post_process(sim_data)
-    # 1. Calculate a totally custom global metric
-    max_val = maximum(sim_data.u)
-    
-    # 2. Inject it into the dataset, explicitly declaring it has no dimensions (Symbol[])
-    PDEStudioCore.add_stat!(sim_data, :global_maximum, max_val, Symbol[])
-    
-    # 3. Return true to instruct the backend to overwrite the file on disk!
-    return true
-end
-
-# Attach it to your config
-config = SimulationConfig(
-    :my_wave_solver, shared, methods, [:upwind];
-    post_process_name = :my_post_process
-)
+add_stat!(data, :runtime, elapsed_seconds, Symbol[])          # scalar
+add_stat!(data, :energy_history, energy_vector, :time)        # one value per time step
 ```
 
-> **Note:** Whenever you use `add_stat!`, you must provide the `kept_dims` argument (like `:time`, `:space`, or `Symbol[]`). This ensures the UI frontend (**PDEStudio.jl**) knows exactly how to slice and visualize your custom array later!
+Numbers and arrays of numbers are converted to `SVector`s with the dataset's component count. Shapes are checked: against the kept axes for Eulerian data, and against the time steps and particle counts for Lagrangian data. `calculate_all_stats!` leaves statistics added this way alone, unless the same name is also registered globally (you get a warning if the kept dimensions differ). `delete_stat!(data, :runtime)` removes one again, and `delete_stat!(:name)` removes a statistic from the global registry.
+
+Assigning `data.stats[:name] = value` also works, but it does not record kept dimensions; prefer `add_stat!`.
+
+### Using `add_stat!` in Post-Processing
+
+A natural place for custom metrics is the post-processing function of a [`SimulationConfig`](@ref), which runs after the statistics pass:
+
+```julia
+function my_post_process(data)
+    add_stat!(data, :global_maximum, maximum(v -> v[1], data.u), Symbol[])
+    return true   # save the dataset
+end
+
+config = SimulationConfig(shared, methods, [:upwind]; postprocess = :my_post_process)
+```
+
+> **Note:** The kept dimensions recorded by `register_stat!`/`add_stat!` tell conversions and the **PDEStudio.jl** frontend how to slice and display a statistic.

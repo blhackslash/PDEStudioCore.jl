@@ -1,493 +1,392 @@
+# ==============================================================================
+# --- Task generation & the batch pipeline ---
+# ==============================================================================
+
+const _REFERENCE_KEYWORDS = ("analytic", "reference", "exact", "baseline", "true")
+
 """
     is_reference_method(m_name::Symbol)
 
-Determines if a given method symbol designates an analytical or baseline reference solution. 
-It checks if the method name contains keywords such as "analytic", "reference", "exact", "baseline", or "true".
-
-# Arguments
-- `m_name::Symbol`: The method identifier to evaluate.
-
-# Returns
-- `Bool`: `true` if the method is a reference method, `false` otherwise.
+`true` if a word of the method name (split at `_`, `-` and non-alphanumerics) starts with
+"analytic", "reference", "exact", "baseline" or "true" (e.g. `:analytic`, `:exact_solution`).
+Reference methods are skipped by [`run_all_simulations`](@ref).
 """
-function is_reference_method(m_name::Symbol)
-    lm = lowercase(String(m_name))
-    return any(k -> occursin(k, lm), ["analytic", "reference", "exact", "baseline", "true"])
+function is_reference_method(m_name::Union{Symbol, AbstractString})
+    words = split(lowercase(String(m_name)), r"[^a-z0-9]+"; keepempty = false)
+    return any(w -> any(k -> startswith(w, k), _REFERENCE_KEYWORDS), words)
 end
 
 """
-    run_smart_simulation(sim_func::Function, params::ParamDict; force_overwrite::Bool=false)
+    get_ignore_keys(methods::AbstractDict, method_name::Symbol)
 
-A smart execution wrapper for individual simulation runs. It checks the disk cache for an existing 
-dataset matching the exact cryptographic hash of the parameters. If found, it safely bypasses 
-execution to conserve compute resources.
-
-# Arguments
-- `sim_func::Function`: The core simulation function to execute.
-- `params::ParamDict`: The strictly typed dictionary of parameters for this run.
-
-# Keyword Arguments
-- `force_overwrite::Bool`: If `true`, forces the simulation to execute and overwrites any existing cache. Default is `false`.
-
-# Returns
-- `AbstractSimData`: The resulting simulation data, or `NoSimData` if execution was bypassed.
+The shared keys that `method_name` excludes via its `:ignore` entry.
 """
-function run_smart_simulation(sim_func::Function, params::ParamDict; force_overwrite::Bool=false)
-    if !force_overwrite && does_sim_data_exist(params)
-        return NoSimData()
+function get_ignore_keys(method_collection::AbstractDict, method_name::Symbol)
+    raw_ignore = get(get(method_collection, method_name, ParamDict()), :ignore, Symbol[])
+    if raw_ignore isa AbstractVector || raw_ignore isa Tuple
+        return Symbol[Symbol(k) for k in raw_ignore]
+    elseif raw_ignore isa Union{AbstractString, Symbol}
+        return [Symbol(raw_ignore)]
     end
-    # Run the actual simulation
-    sim_data = sim_func(params)
-    
-    if !isnothing(sim_data)
-        save_sim_data(sim_data; overwrite=true)
-    end
-    
-    return sim_data
+    return Symbol[]
 end
 
 """
-    generate_method_tasks(base_params::ParamDict, active_keys::Vector{Symbol}, active_values::Vector; ignore_keys::Vector{Symbol}=Symbol[])
+    assemble_params(shared::AbstractDict, methods::AbstractDict, method_name::Symbol)
 
-Generates the comprehensive parameter grid for a multi-dimensional simulation sweep. 
-It dynamically parses dimensional identifiers (e.g., `:Ns__x`, `:Ns__1`) and reconstructs them 
-back into their base `Tuple` format (e.g., `:Ns => (val1, val2)`) across the Cartesian product of the sweep.
-
-# Arguments
-- `base_params::ParamDict`: The baseline parameters for the current method.
-- `active_keys::Vector{Symbol}`: The parameter keys being varied in the sweep.
-- `active_values::Vector`: The corresponding vectors of values to sweep over.
-
-# Keyword Arguments
-- `ignore_keys::Vector{Symbol}`: Keys that should be entirely excluded from this specific method's generation.
-
-# Returns
-- `Tuple{Vector{ParamDict}, Vector{Tuple}}`: A tuple containing the list of flat task dictionaries and their Cartesian grid indices.
+Shared parameters (minus the method's ignored keys) overridden by the method's own parameters.
 """
-function generate_method_tasks(base_params::ParamDict, active_keys::Vector{Symbol}, active_values::Vector; ignore_keys::Vector{Symbol}=Symbol[])
-    
-    processed_base = copy(base_params)
+function assemble_params(shared_params::AbstractDict, method_collection::AbstractDict, method_name::Symbol)
+    ignore_keys = get_ignore_keys(method_collection, method_name)
+    params = ParamDict()
+    for (key, val) in shared_params
+        Symbol(key) in ignore_keys || (params[Symbol(key)] = val)
+    end
+    for (key, val) in get(method_collection, method_name, ParamDict())
+        params[Symbol(key)] = val
+    end
+    return params
+end
 
-    # --- 1. Pre-parse Varied Parameters (Active Keys) ---
-    varied_std = Tuple{Int, Symbol}[]       # Stores: (index_in_pvals, key)
-    varied_tup = Tuple{Int, Symbol, Int}[]  # Stores: (index_in_pvals, base_name, tuple_idx)
-    
-    for (i, k) in enumerate(active_keys)
-        k in ignore_keys && continue
-        
-        # Convert Symbol to String strictly for the Regex match
-        m = match(r"^(.+)__([a-zA-Z0-9]+)$", String(k))
-        if !isnothing(m)
-            base = Symbol(m.captures[1])
-            base in ignore_keys && continue
-            idx_str = m.captures[2]
-            idx = (idx_str == "x" || idx_str == "1") ? 1 :
-                  (idx_str == "y" || idx_str == "2") ? 2 :
-                  (idx_str == "z" || idx_str == "3") ? 3 : tryparse(Int, idx_str)
-            
-            if !isnothing(idx)
-                push!(varied_tup, (i, base, idx))
-                continue
-            end
+_tuple_index(s::AbstractString) = s in ("x", "1") ? 1 : s in ("y", "2") ? 2 : s in ("z", "3") ? 3 : tryparse(Int, s)
+
+# Splits a varied key into (base key, tuple index); the index is `nothing` for ordinary keys.
+function _split_varied_key(k::Symbol)
+    m = match(r"^(.+)__([a-zA-Z0-9]+)$", String(k))
+    m === nothing && return (k, nothing)
+    idx = _tuple_index(m.captures[2])
+    return idx === nothing ? (k, nothing) : (Symbol(m.captures[1]), idx)
+end
+
+"""
+    generate_method_tasks(base_params, active_keys, active_values; ignore_keys = Symbol[])
+
+Expands one method's parameters over the Cartesian product of `active_values`. Keys of the form
+`:Ns__x`/`:Ns__1` (`__y`/`__2`, `__z`/`__3`, `__<n>`) set one entry of the tuple parameter `:Ns`.
+Varied keys that are absent from `base_params` (or ignored) are not applied to this method.
+Returns `(tasks, grid_indices)`.
+"""
+function generate_method_tasks(base_params::AbstractDict, active_keys::AbstractVector, active_values::AbstractVector;
+                               ignore_keys::AbstractVector = Symbol[])
+    length(active_keys) == length(active_values) || throw(ArgumentError("active_keys and active_values must have the same length"))
+    base = _to_paramdict(base_params)
+    ignore = Symbol[Symbol(k) for k in ignore_keys]
+
+    varied_std = Tuple{Int, Symbol}[]       # (index into the value tuple, key)
+    varied_tup = Tuple{Int, Symbol, Int}[]  # (index into the value tuple, base key, tuple entry)
+    for (i, k) in enumerate(Symbol.(active_keys))
+        k in ignore && continue
+        base_key, idx = _split_varied_key(k)
+        if idx === nothing
+            push!(varied_std, (i, k))
+        elseif !(base_key in ignore)
+            push!(varied_tup, (i, base_key, idx))
         end
-        push!(varied_std, (i, k))
     end
 
-    # --- 2. Grid Generation ---
-    if isempty(active_values)
-        param_grid = [()]
-    else
-        param_grid = collect(Iterators.product(active_values...))
-    end
-    
-    tasks, grid_indices = Vector{ParamDict}(), Vector{Tuple}()
-
-    for (linear_idx, p_vals) in enumerate(param_grid)
-        task_params = copy(processed_base)
-        
-        # Apply Standard Varied Parameters
+    grid = isempty(active_values) ? [()] : collect(Iterators.product(active_values...))
+    tasks, grid_indices = ParamDict[], Tuple[]
+    for (linear_idx, p_vals) in enumerate(grid)
+        task = copy(base)
         for (i, k) in varied_std
-            # Only update if it exists in base
-            !haskey(task_params, k) && continue 
-            task_params[k] = p_vals[i]
+            haskey(task, k) && (task[k] = p_vals[i])
         end
-        
-        # Apply Tuple Varied Parameters
         if !isempty(varied_tup)
-            tup_updates = Dict{Symbol, Vector{Any}}()
-            
-            for (i, base, idx) in varied_tup
-
-                !haskey(task_params, base) && continue 
-                
-                if !haskey(tup_updates, base)
-                    tup_updates[base] = collect(Any, task_params[base])
+            updates = Dict{Symbol, Vector{Any}}()
+            for (i, base_key, idx) in varied_tup
+                haskey(task, base_key) || continue
+                arr = get!(() -> collect(Any, task[base_key]), updates, base_key)
+                while length(arr) < idx
+                    push!(arr, 0.0)
                 end
-                
-                arr = tup_updates[base]
-                while length(arr) < idx; push!(arr, 0.0); end
                 arr[idx] = p_vals[i]
             end
-            
-            for (base, arr) in tup_updates
-                task_params[base] = all(x -> x isa Integer, arr) ? Tuple(Int.(arr)) : Tuple(arr)
+            for (base_key, arr) in updates
+                task[base_key] = all(x -> x isa Integer, arr) ? Tuple(Int.(arr)) : Tuple(arr)
             end
         end
-        
-        indices = isempty(active_values) ? () : Tuple(CartesianIndices(param_grid)[linear_idx])
-        push!(tasks, task_params)
-        push!(grid_indices, indices)
+        push!(tasks, task)
+        push!(grid_indices, isempty(active_values) ? () : Tuple(CartesianIndices(grid)[linear_idx]))
     end
-    
     return tasks, grid_indices
 end
 
 """
-    get_ignore_keys(method_collection::MethodDict, method_name::Symbol)
+    generate_tasks(config::SimulationConfig)
 
-Safely extracts the list of keys a specific numerical method is configured to ignore during parameter assembly.
-
-# Arguments
-- `method_collection::MethodDict`: The dictionary containing all method overrides.
-- `method_name::Symbol`: The specific method being queried.
-
-# Returns
-- `Vector{Symbol}`: A list of keys to ignore.
+All parameter sets [`run_all_simulations`](@ref) would execute (reference methods skipped,
+duplicates removed). Handy to load the results of a sweep:
+`[load_sim_data(p) for p in generate_tasks(config)]`.
 """
-function get_ignore_keys(method_collection::MethodDict, method_name::Symbol)
-    method_dict = get(method_collection, method_name, ParamDict())
-    raw_ignore = get(method_dict, :ignore, Symbol[])
-    
-    if raw_ignore isa AbstractVector || raw_ignore isa Tuple
-        return Symbol.(raw_ignore)
-    elseif raw_ignore isa AbstractString || raw_ignore isa Symbol
-        return [Symbol(raw_ignore)]
-    else
-        return Symbol[]
+function generate_tasks(config::SimulationConfig)
+    vkeys = sort!(collect(keys(config.varied)))
+    vvals = Vector[config.varied[k] for k in vkeys]
+    methods = isempty(config.methods) && isempty(config.defaults) ? Union{Nothing, Symbol}[nothing] :
+              Union{Nothing, Symbol}[m for m in config.defaults if !is_reference_method(m)]
+
+    tasks = ParamDict[]
+    seen = Set{String}()
+    used = Set{Symbol}()
+    for method in methods
+        base = method === nothing ? copy(config.shared) : assemble_params(config.shared, config.methods, method)
+        ignore = method === nothing ? Symbol[] : get_ignore_keys(config.methods, method)
+        for k in vkeys
+            base_key, _ = _split_varied_key(k)
+            (haskey(base, base_key) && !(k in ignore) && !(base_key in ignore)) && push!(used, k)
+        end
+        method_tasks, _ = generate_method_tasks(base, vkeys, vvals; ignore_keys = ignore)
+        for task in method_tasks
+            h = _param_hash(task)
+            h in seen && continue
+            push!(seen, h)
+            push!(tasks, task)
+        end
+    end
+    for k in vkeys
+        k in used || @warn "Varied parameter :$k does not appear in the parameters of any active method and is ignored."
+    end
+    return tasks
+end
+
+function _resolve_solver(params::AbstractDict)
+    haskey(params, :sim_func_name) || throw(ArgumentError(
+        "the parameters contain no :sim_func_name (the name of the solver function)"))
+    name = params[:sim_func_name]
+    name isa Function && throw(ArgumentError(
+        ":sim_func_name must be the *name* of the solver (a Symbol); functions cannot be hashed"))
+    f = resolve_dynamic_function(name)
+    f === nothing && throw(ArgumentError("could not resolve the solver function `$name`"))
+    return f
+end
+
+"""
+    run_smart_simulation(sim_func, params; force_overwrite = false, metadata = Dict())
+
+Runs `sim_func(params)` unless a dataset for `params` already exists (then returns `NoSimData()`).
+The solver receives a copy of the parameters; the result is always stored under the task
+parameters so it can be found again. Returns the produced data (or `NoSimData()`).
+"""
+function run_smart_simulation(sim_func, params::AbstractDict; force_overwrite::Bool = false,
+                              metadata::AbstractDict = Dict{String, Any}())
+    !force_overwrite && does_sim_data_exist(params) && return NoSimData()
+    task_params = _to_paramdict(params)
+    # invokelatest: the solver may have been defined after the caller started (e.g. via `sources`).
+    sim_data = Base.invokelatest(sim_func, copy(task_params))
+    (sim_data === nothing || sim_data isa NoSimData) && return NoSimData()
+    sim_data isa AbstractSimData || throw(ArgumentError(
+        "the solver must return an AbstractSimData (see `create_sim_data`), got $(typeof(sim_data))"))
+    if _param_hash(sim_data.params) != _param_hash(task_params)
+        @warn "The solver returned data whose parameters differ from the task parameters; " *
+              "storing it under the task parameters so that it can be found again."
+        empty!(sim_data.params)
+        merge!(sim_data.params, task_params)
+    end
+    save_sim_data(sim_data; overwrite = true, verbose = false, metadata = metadata)
+    return sim_data
+end
+
+function _run_task(params::ParamDict, force_overwrite::Bool, metadata::AbstractDict)
+    try
+        !force_overwrite && does_sim_data_exist(params) && return :cached
+        result = run_smart_simulation(_resolve_solver(params), params; force_overwrite = true, metadata = metadata)
+        return result isa NoSimData ? :empty : :ran
+    catch e
+        @error "Simulation failed for parameters $params" exception = (e, catch_backtrace())
+        return :failed
+    end
+end
+
+function _load_sources(sources::AbstractVector{<:AbstractString})
+    for file in sources
+        path = abspath(file)
+        isfile(path) || throw(ArgumentError("source file not found: $path"))
+        Base.include(get_target_module(), path)
+    end
+    return nothing
+end
+
+# Always written (possibly empty), so a rerun without sources replaces digests from an earlier run.
+function _source_metadata(sources::AbstractVector{<:AbstractString})
+    digests = Dict{String, String}(abspath(f) => bytes2hex(open(sha256, abspath(f))) for f in sources)
+    return Dict{String, Any}("sources" => digests)
+end
+
+function _stats_task(params::ParamDict, ref_factory, required::Vector{Symbol}, force_overwrite::Bool)
+    try
+        path = _find_file(params)
+        path === nothing && return :missing
+        (force_overwrite || _needs_stats(path, required)) || return :cached
+        sim_data = _load_key(path, "raw")
+        ref_func = ref_factory === nothing ? nothing : ref_factory(params)
+        calculate_all_stats!(sim_data, ref_func; force_overwrite = force_overwrite)
+        return :ran
+    catch e
+        @error "Statistics failed for parameters $params" exception = (e, catch_backtrace())
+        return :failed
+    end
+end
+
+function _post_task(params::ParamDict, post_func)
+    try
+        path = _find_file(params)
+        path === nothing && return :missing
+        sim_data = _load_key(path, "raw")
+        post_func(sim_data) === true && save_sim_data(sim_data; overwrite = true, verbose = false)
+        return :ran
+    catch e
+        @error "Post-processing failed for parameters $params" exception = (e, catch_backtrace())
+        return :failed
+    end
+end
+
+# Whether a file is missing (or has stale) entries for any of the required statistics.
+function _needs_stats(path::AbstractString, required::Vector{Symbol})
+    return jldopen(path, "r") do file
+        saved = haskey(file, "stat_keys") ? file["stat_keys"] : Symbol[]
+        evaluated = haskey(file, "evaluated_stats") ? file["evaluated_stats"] : Symbol[]
+        file_registry = haskey(file, "registry") ? file["registry"] : nothing
+        registry = get_stat_registry()
+        for k in required
+            (k in saved || k in evaluated) || return true
+            file_registry === nothing || get(file_registry, k, nothing) == registry[k] || return true
+        end
+        return false
     end
 end
 
 """
-    assemble_params(shared_params::ParamDict, method_collection::MethodDict, method_name::Symbol)
+    run_all_simulations(config::SimulationConfig; force_overwrite = false, calculate_stats = false,
+                        post_process = true, parallel = false)
 
-Constructs a flat, unified parameter dictionary for a specific simulation run by combining 
-shared baseline parameters with method-specific overrides. Automatically filters out any keys 
-flagged for ignoring by the specific method.
-
-# Arguments
-- `shared_params::ParamDict`: The baseline parameters shared across all runs.
-- `method_collection::MethodDict`: The dictionary containing method-specific overrides.
-- `method_name::Symbol`: The active method being assembled.
-
-# Returns
-- `ParamDict`: The fully resolved parameter dictionary for the run.
+Runs the complete pipeline for a [`SimulationConfig`](@ref):
+0. includes `config.sources` into the target module,
+1. runs every task of [`generate_tasks`](@ref) whose data is not on disk yet (all of them with
+   `force_overwrite`), in parallel over Julia threads with `parallel = true`,
+2. with `calculate_stats = true`, evaluates missing statistics using the reference factory
+   `config.reference` (`params -> (x -> u_exact)`),
+3. with `post_process = true`, calls `config.postprocess(data)` for every dataset and saves the
+   data when it returns `true`.
+Failures of individual tasks are logged and do not abort the batch.
 """
-function assemble_params(
-    shared_params::ParamDict,
-    method_collection::MethodDict,
-    method_name::Symbol
-)::ParamDict
-
-    method_dict = get(method_collection, method_name, ParamDict())
-    ignore_keys = get_ignore_keys(method_collection, method_name)
-    
-    current_params = ParamDict()
-    
-    # 1. Add shared parameters (skipping ignored ones)
-    for (key, val) in shared_params
-        key in ignore_keys && continue
-        current_params[key] = val
+function run_all_simulations(config::SimulationConfig; force_overwrite::Bool = false, calculate_stats::Bool = false,
+                             post_process::Bool = true, parallel::Bool = false)
+    @info "Started simulation pipeline."
+    _load_sources(config.sources)
+    tasks = generate_tasks(config)
+    n = length(tasks)
+    if n == 0
+        @info "No numerical simulations to run."
+        return nothing
     end
 
-    # 2. Add/Override with method-specific parameters
-    for (key, val) in method_dict
-        current_params[key] = val
-    end
-    return current_params
-end
+    # Every per-task call goes through `invokelatest`, so functions defined after this call started
+    # (e.g. in `config.sources`, or a stat preset loaded inside a function) are visible.
 
-"""
-    run_all_simulations(sim_config::SimulationConfig; kwargs...)
-
-The primary execution engine for the package. Evaluates the `SimulationConfig`, resolves parameter sweeps, 
-manages disk caching, and coordinates statistical evaluation and custom post-processing. 
-
-Designed for robust, headless execution on computing clusters.
-
-# Arguments
-- `sim_config::SimulationConfig`: The orchestration blueprint defining the full pipeline.
-
-# Keyword Arguments
-- `force_overwrite::Bool`: If `true`, bypasses cache checks and forces re-execution of all tasks. Default is `false`.
-- `calculate_stats::Bool`: If `true`, automatically integrates statistical metrics (e.g., L2 errors) after generation. Default is `false`.
-- `post_process::Bool`: If `true`, executes the custom user-defined post-processing routine. Default is `true`.
-- `parallel::Bool`: If `true`, dispatches simulation tasks across available Julia threads. Default is `false`.
-"""
-function run_all_simulations(
-    sim_config::SimulationConfig;
-    force_overwrite::Bool = false,
-    calculate_stats::Bool = false,
-    post_process::Bool = true,
-    parallel::Bool = false
-)
-    @info "Started Simulation Pipeline."
-    varied_params = sim_config.varied_params
-    active_methods = sim_config.active_methods
-
-    active_keys = collect(keys(varied_params))
-    active_values = collect(values(varied_params))
-    
-    # 1. Generate all parameter combinations
-    all_tasks = Vector{ParamDict}()
-    for method in active_methods
-        if is_reference_method(method); continue; end
-        base_params = assemble_params(sim_config.shared_params, sim_config.methods_dict, method)
-        ignore_keys = get_ignore_keys(sim_config.methods_dict, method)
-        tasks, _ = generate_method_tasks(base_params, active_keys, active_values; ignore_keys=ignore_keys)
-        append!(all_tasks, tasks)
-    end
-    
-    num_tasks = length(all_tasks)
-    if num_tasks == 0
-        @info "No numerical simulations generated to run."
-        return 
-    end
-    
-    @info "Pass 1: Executing $num_tasks simulations (Parallel: $parallel)..."
-    p = Progress(num_tasks; desc="Running Simulations...")
-    counter = Threads.Atomic{Int}(0)
-    
-    # Run loop strictly iterating over the parameters
+    # --- Pass 1: simulations ---
+    @info "Pass 1: executing $n simulation task(s) (parallel: $parallel)..."
+    metadata = _source_metadata(config.sources)
+    status = fill(:pending, n)
+    progress = Progress(n; desc = "Running simulations...")
     if parallel
-        Threads.@threads for params in all_tasks
-            try
-                # 1. Resolve the task-specific simulation function on the fly[cite: 5, 6]
-                sim_sym = params[:sim_func_name]
-                sim_func = resolve_dynamic_function(sim_sym)
-                
-                if isnothing(sim_func)
-                    error("Could not resolve simulation function: $sim_sym")
-                end
-                
-                run_smart_simulation(sim_func, params; force_overwrite=force_overwrite)
-            catch e
-                @error "Simulation Thread Error" exception=(e, catch_backtrace())
-            end
-            Threads.atomic_add!(counter, 1)
-            ProgressMeter.update!(p, counter[])
+        Threads.@threads for i in 1:n
+            status[i] = Base.invokelatest(_run_task, tasks[i], force_overwrite, metadata)
+            next!(progress)
         end
     else
-        for params in all_tasks
-            try
-                # 1. Resolve the task-specific simulation function on the fly[cite: 5, 6]
-                sim_sym = params[:sim_func_name]
-                sim_func = resolve_dynamic_function(sim_sym)
-                
-                if isnothing(sim_func)
-                    error("Could not resolve simulation function: $sim_sym")
-                end
-                
-                run_smart_simulation(sim_func, params; force_overwrite=force_overwrite)
-            catch e
-                @error "Simulation Thread Error" exception=(e, catch_backtrace())
-            end
-            counter[] += 1
-            ProgressMeter.update!(p, counter[])
+        for i in 1:n
+            status[i] = Base.invokelatest(_run_task, tasks[i], force_overwrite, metadata)
+            next!(progress)
         end
     end
-    
-    # Pass 2: Calculate Statistics
+    @info "Pass 1 finished: $(count(==(:ran), status)) run, $(count(==(:cached), status)) cached, " *
+          "$(count(==(:empty), status)) without output, $(count(==(:failed), status)) failed."
+
+    # --- Pass 2: statistics ---
     if calculate_stats
-        @info "Pass 2: Calculating Stats"
-        p2 = Progress(num_tasks; desc="Calculating Stats...")
-        counter2 = Threads.Atomic{Int}(0)
-
-        ref_factory = resolve_dynamic_function(sim_config.reference_name)
-        
-        # Standard required stats (ignores derived stats and :Solution)
-        standard_req_stats = filter(k -> k !== :Solution, collect(keys(_ACTIVE_STAT_REGISTRY[])))
-        
-        for params in all_tasks
-            # --- FAST METADATA CHECK ---
-            if !force_overwrite
-                file_path = try get_file_name(params) catch; "" end
-                if !isempty(file_path)
-                    needs_stats = jldopen(file_path, "r") do f
-                        if haskey(f, "stat_keys")
-                            saved_keys = f["stat_keys"]
-                            # Returns true if ANY required stat is missing
-                            return any(k -> !(k in saved_keys), standard_req_stats)
-                        end
-                        return true # Fallback if metadata is missing
-                    end
-                    
-                    # If all standard stats are present, instantly skip to the next file
-                    if !needs_stats
-                        counter2[] += 1
-                        ProgressMeter.update!(p2, counter2[])
-                        continue
-                    end
-                end
-            end
-            
-            # --- SLOW PATH: Only loads if stats are actually missing ---
-            sim_data = load_sim_data(params, Val(:raw))
-            if !(sim_data isa NoSimData)  
-                ref_func = isnothing(ref_factory) ? nothing : ref_factory(params)
-                calculate_all_stats!(sim_data, ref_func; force_overwrite=force_overwrite)
-            end
-            counter2[] += 1
-            ProgressMeter.update!(p2, counter2[])
+        @info "Pass 2: calculating statistics..."
+        ref_factory = resolve_dynamic_function(config.reference)
+        required = sort!(Symbol[k for k in keys(get_stat_registry()) if k !== :Solution])
+        progress = Progress(n; desc = "Calculating stats...")
+        for params in tasks
+            Base.invokelatest(_stats_task, params, ref_factory, required, force_overwrite)
+            next!(progress)
         end
     end
-    post_process_func = resolve_dynamic_function(sim_config.post_process_name)
-    # Pass 3: Custom Post-Processing
-    if post_process && !isnothing(post_process_func)
-        @info "Pass 3: Custom Post-Processing"
-        p3 = Progress(num_tasks; desc="Post-processing...")
-        counter3 = Threads.Atomic{Int}(0)
 
-        for params in all_tasks
-            sim_data = load_sim_data(params, Val(:raw))
-            if !(sim_data isa NoSimData)
-                
-                # Execute the custom function 
-                changed = post_process_func(sim_data)
-                
-                # Overwrite on disk only if the user function returns true
-                if changed
-                    save_sim_data(sim_data; overwrite=true)
-                end
-                
-            end
-            counter3[] += 1
-            ProgressMeter.update!(p3, counter3[])
+    # --- Pass 3: post-processing ---
+    post_func = resolve_dynamic_function(config.postprocess)
+    if post_process && post_func !== nothing
+        @info "Pass 3: custom post-processing..."
+        progress = Progress(n; desc = "Post-processing...")
+        for params in tasks
+            Base.invokelatest(_post_task, params, post_func)
+            next!(progress)
         end
     end
-    
+
     @info "Batch simulation run complete!"
-    return
+    return nothing
 end
 
 # ==============================================================================
-# --- REFERENCE GENERATORS ---
+# --- Reference generators ---
 # ==============================================================================
 
-"""
-    generate_reference_simdata(ref_func, params, template_domain, res, ::Val{:eulerian})
-
-Generates a pointwise perfect exact analytical reference dataset mapped onto a dense Eulerian grid. 
-Utilizes multithreading for fast tensor allocation and evaluation across the D-dimensional domain.
-
-# Arguments
-- `ref_func::Function`: The analytical reference function to evaluate.
-- `params::ParamDict`: The parameter dictionary of the associated numerical run.
-- `template_domain::DomainInfo`: The bounding box and metadata of the numerical run.
-- `res::NTuple{D, Int}`: The requested spacetime grid resolution.
-- `::Val{:eulerian}`: Strict type token for Eulerian generation.
-
-# Returns
-- `ESimData`: The generated Eulerian reference dataset.
-"""
-function generate_reference_simdata(
-    ref_func::Function, 
-    params::ParamDict, 
-    template_domain::DomainInfo{D, T},
-    res::NTuple{D, Int},
-    ::Val{:eulerian}
-) where {D, T}
-    
-    # Dynamically infer Spatial Dimensions (DS)
-    DS = isnothing(template_domain.time_dim) ? D : D - 1
-    
-    # 1. Build axes dynamically from the explicit res tuple
-    axes_list = ntuple(Val(D)) do d
-        collect(range(template_domain.mins[d], template_domain.maxs[d], length=res[d]))
-    end
-    
-    # 2. Evaluate one spacetime point to find the number of components (M_ref)
-    sample_st = SVector{D, T}(ntuple(d -> axes_list[d][1], Val(D)))
-    M_ref = length(ref_func(sample_st))
-    
-    # 3. Allocate the generalized Spacetime tensor
-    u_exact = Array{SVector{M_ref, T}, D}(undef, res...)
-    
-    # 4. Evaluate the exact function on the fly using multithreading
-    Threads.@threads for idx in CartesianIndices(res)
-        st = SVector{D, T}(ntuple(d -> axes_list[d][idx[d]], Val(D)))
-        u_exact[idx] = SVector{M_ref, T}(ref_func(st))
-    end
-    
-    # Safely compute spacings using the explicit resolution
-    spacing = SVector{D, T}(ntuple(d -> res[d] > 1 ? (template_domain.maxs[d] - template_domain.mins[d]) / T(res[d] - 1) : one(T), Val(D)))
-    
-    ref_domain = DomainInfo{D, T}(template_domain.dim_keys, template_domain.mins, template_domain.maxs, spacing, template_domain.time_dim, template_domain.stat_registry)
-    
-    ram_data = ESimData{D, DS, M_ref, T}(params, ref_domain, axes_list, u_exact, StatDict{M_ref, T}(:Solution => u_exact))
-    
-    return ram_data
+function _grid_spacing(axes::Tuple, ::Type{T}) where {T}
+    return SVector{length(axes), T}(ntuple(d -> length(axes[d]) > 1 ?
+        (last(axes[d]) - first(axes[d])) / T(length(axes[d]) - 1) : one(T), length(axes)))
 end
+
 """
-    generate_reference_simdata(ref_func, params, template_domain, res, ::Val{:lagrangian})
+    generate_reference_simdata(ref_func, params, template_domain, res, Val(:eulerian))
+    generate_reference_simdata(ref_func, params, template_domain, res, Val(:lagrangian))
+    generate_reference_simdata(ref_func, params, template_domain, res, kind::Symbol)
 
-Generates an exact analytical reference dataset mapped onto a static, structured grid of Lagrangian particles across time.
-
-# Arguments
-- `ref_func::Function`: The analytical reference function to evaluate.
-- `params::ParamDict`: The parameter dictionary of the associated numerical run.
-- `template_domain::DomainInfo`: The bounding box and metadata of the numerical run.
-- `res::NTuple{D, Int}`: The requested spacetime grid resolution.
-- `::Val{:lagrangian}`: Strict type token for Lagrangian generation.
-
-# Returns
-- `LSimData`: The generated Lagrangian reference dataset.
+Evaluates the exact solution `ref_func(x::SVector{D})` on a uniform grid spanning the bounding box
+of `template_domain` with spacetime resolution `res`, as Eulerian data or as stationary particles.
 """
-function generate_reference_simdata(
-    ref_func::Function, 
-    params::ParamDict, 
-    template_domain::DomainInfo{D, T},
-    res::NTuple{D, Int},
-    ::Val{:lagrangian}
-) where {D, T}
-    
-    t_dim_idx = get_time_dim(template_domain)
-    DS = isnothing(t_dim_idx) ? D : D - 1
-    
-    # 1. Extract spatial and temporal resolutions from the unified res tuple
-    s_shape = isnothing(t_dim_idx) ? res : ntuple(d -> res[d < t_dim_idx ? d : d+1], Val(DS))
-    T_len = isnothing(t_dim_idx) ? 1 : res[t_dim_idx]
-    
-    # 2. Build spatial axes and static particles
-    s_axes = ntuple(d -> collect(range(template_domain.mins[d], template_domain.maxs[d], length=s_shape[d])), Val(DS))
-    
-    static_particles = vec([SVector{DS, T}(ntuple(d -> s_axes[d][idx[d]], Val(DS))) 
-                            for idx in CartesianIndices(s_shape)])
-    
-    # Temporal constraints
-    t_vec = D > DS ? collect(range(template_domain.mins[t_dim_idx], template_domain.maxs[t_dim_idx], length=T_len)) : T[0.0]
-    
-    x_ref = [copy(static_particles) for _ in 1:T_len]
-    
-    # 3. Pack a sample point to infer M_ref
-    sample_st = D > DS ? SVector{D, T}(static_particles[1]..., t_vec[1]) : SVector{D, T}(static_particles[1])
-    M_ref = length(ref_func(sample_st))
-    
-    u_ref = Vector{Vector{SVector{M_ref, T}}}(undef, T_len)
-    
-    # 4. Evaluate using multithreading
-    Threads.@threads for t_idx in 1:T_len
-        t_val = t_vec[t_idx]
-        if D > DS
-            u_ref[t_idx] = [SVector{M_ref, T}(ref_func(SVector{D, T}(pos..., t_val))) for pos in static_particles]
-        else
-            u_ref[t_idx] = [SVector{M_ref, T}(ref_func(SVector{D, T}(pos))) for pos in static_particles]
-        end
+generate_reference_simdata(ref_func, params::AbstractDict, template_domain::DomainInfo, res::Tuple, kind::Symbol) =
+    generate_reference_simdata(ref_func, params, template_domain, res, Val(kind))
+
+function generate_reference_simdata(ref_func, params::AbstractDict, template_domain::DomainInfo{D, T}, res::Tuple,
+                                    ::Val{:eulerian}) where {D, T}
+    res_ = _check_res(res, D)
+    axes = ntuple(d -> _linspace(template_domain.mins[d], template_domain.maxs[d], res_[d]), Val(D))
+    M = length(ref_func(SVector{D, T}(ntuple(d -> axes[d][1], Val(D)))))
+    return _reference_eulerian(ref_func, params, template_domain, axes, Val(M))
+end
+
+function _reference_eulerian(ref_func, params, domain::DomainInfo{D, T}, axes::NTuple{D, Vector{T}}, ::Val{M}) where {D, T, M}
+    u = Array{SVector{M, T}, D}(undef, map(length, axes))
+    Threads.@threads for I in CartesianIndices(u)
+        u[I] = _as_svector(ref_func(SVector{D, T}(ntuple(d -> axes[d][I[d]], Val(D)))), Val(M), T)
     end
-    
-    # Safely compute spacings using the unified tuple
-    spacing = SVector{D, T}(ntuple(d -> res[d] > 1 ? (template_domain.maxs[d] - template_domain.mins[d]) / T(res[d] - 1) : one(T), Val(D)))
-    
-    ref_domain = DomainInfo{D, T}(template_domain.dim_keys, template_domain.mins, template_domain.maxs, spacing, template_domain.time_dim, template_domain.stat_registry)
-    
-    return LSimData{D, DS, M_ref, T}(params, ref_domain, t_vec, x_ref, u_ref, StatDict{M_ref, T}(:Solution => u_ref))
+    ref_domain = _copy_domain(domain; spacing = _grid_spacing(axes, T))
+    return ESimData{D, _nspace(domain), M, T}(params, ref_domain, axes, u)
+end
+
+function generate_reference_simdata(ref_func, params::AbstractDict, template_domain::DomainInfo{D, T}, res::Tuple,
+                                    ::Val{:lagrangian}) where {D, T}
+    return _reference_lagrangian(ref_func, params, template_domain, _check_res(res, D), Val(_nspace(template_domain)))
+end
+
+function _reference_lagrangian(ref_func, params, domain::DomainInfo{D, T}, res::NTuple{D, Int}, ::Val{DS}) where {D, T, DS}
+    s_axes = ntuple(d -> _linspace(domain.mins[d], domain.maxs[d], res[d]), Val(DS))
+    points = vec([SVector{DS, T}(ntuple(d -> s_axes[d][I[d]], Val(DS))) for I in CartesianIndices(ntuple(d -> res[d], Val(DS)))])
+    t_vec = D > DS ? _linspace(domain.mins[D], domain.maxs[D], res[D]) : T[0]
+    first_point = D > DS ? SVector{D, T}(points[1]..., t_vec[1]) : SVector{D, T}(points[1]...)
+    M = length(ref_func(first_point))
+    spacing = D > DS ? _grid_spacing((s_axes..., t_vec), T) : _grid_spacing(s_axes, T)
+    return _reference_particles(ref_func, params, _copy_domain(domain; spacing = spacing), points, t_vec, Val(M))
+end
+
+function _reference_particles(ref_func, params, domain::DomainInfo{D, T}, points::Vector{SVector{DS, T}},
+                              t_vec::Vector{T}, ::Val{M}) where {D, T, DS, M}
+    nt = length(t_vec)
+    u = Vector{Vector{SVector{M, T}}}(undef, nt)
+    Threads.@threads for n in 1:nt
+        tv = t_vec[n]
+        u[n] = [_as_svector(ref_func(D > DS ? SVector{D, T}(p..., tv) : SVector{D, T}(p...)), Val(M), T) for p in points]
+    end
+    return LSimData{D, DS, M, T}(params, domain, t_vec, fill(points, nt), u)
 end

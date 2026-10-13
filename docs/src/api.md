@@ -1,6 +1,6 @@
 # API Reference
 
-Here is the complete public API for PDEStudioCore.jl.
+The complete public API of PDEStudioCore.jl.
 
 ```@autodocs
 Modules = [PDEStudioCore]

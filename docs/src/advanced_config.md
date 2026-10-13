@@ -1,75 +1,83 @@
 # Advanced Simulation Configurations
 
-While the default setup runs your numerical methods perfectly fine, you will often want to sweep across parameter spaces, compare results against a mathematical baseline, or apply custom modifications to your datasets after generation. 
+Beyond running a few methods, you will often want to sweep parameter spaces, compare against an exact solution, post-process every dataset, or make a batch reproducible from its source files. All of this is configured through the keyword arguments of [`SimulationConfig`](@ref).
 
-The `SimulationConfig` constructor accepts several optional keyword arguments to orchestrate these advanced workflows seamlessly.
+## 1. Varied Parameters (Sweeps)
 
-## 1. Varied Parameters (Grid Sweeps)
-
-To run a parameter sweep, you define a `varied_params` dictionary containing vectors of values. The backend automatically computes the Cartesian product of all provided vectors and executes a simulation task for every single combination.
+`varied` maps parameter names to vectors (or ranges) of values. The backend runs the Cartesian product of all vectors for every active method:
 
 ```julia
-# Define the parameter sweep
-varied = Dict(
-    :N   => [50, 100, 200],
-    :CFL => [0.1, 0.5, 0.8]
-)
-
-config = SimulationConfig(
-    :my_wave_solver, shared, methods, [:upwind];
-    varied_params = varied
+config = SimulationConfig(shared, methods, [:upwind];
+    varied = Dict(:N => [50, 100, 200], :cfl => 0.1:0.2:0.9),
 )
 ```
 
-### Advanced Tuple Sweeps
-If your solver expects a tuple (e.g., a 2D spatial resolution like `:Ns => (100, 100)`), you can sweep over individual dimensions independently. Append `__x`, `__y`, or `__1`, `__2` to the base key. The backend intercepts these and safely reconstructs the strictly typed `Tuple` before passing it to your solver.
+A varied key is applied to a method only if the method's parameters (shared plus overrides) contain that key. This lets you sweep a parameter that only some methods use (e.g. `:theta` of a θ-scheme) without duplicating the runs of the others. Duplicate parameter sets are removed, and a key that no active method uses triggers a warning (usually a typo).
+
+### Tuple Sweeps
+
+If your solver expects a tuple (e.g. a 2D resolution `:Ns => (100, 100)`), sweep its entries independently by appending `__x`, `__y`, `__z` or `__1`, `__2`, … to the base key. The tuple is reconstructed (as `Tuple{Int, Int}` for integers) before it reaches your solver:
 
 ```julia
-varied_tuples = Dict(
-    :Ns__x => [50, 100], # Sweeps the first element
-    :Ns__y => [50, 100]  # Sweeps the second element
+varied = Dict(
+    :Ns__x => [50, 100],   # first entry
+    :Ns__y => [50, 100],   # second entry
 )
 ```
 
 ## 2. Analytical Reference Functions
 
-To automate the calculation of error metrics (like L1/L2 errors), you can provide a continuous analytical reference function. This function takes a spacetime coordinate vector and returns the exact mathematical solution. By passing its registered name to `ref_func_name`, the backend will automatically generate a pointwise perfect exact cache and evaluate your registered statistics against it.
+Error statistics (L1/L2 errors, …) need the exact solution. Provide the **name of a reference factory**: a function that receives the run's parameters and returns the exact solution as a function of a spacetime coordinate `x::SVector{D}` (`x[end]` is the time for transient data). The factory lets the exact solution depend on the parameters (wave speed, initial condition, …):
 
 ```julia
-function exact_wave(st)
-    # st is a spacetime coordinate SVector (e.g., [x, y, t])
-    return SVector(sin(st[1] - st[end]))
-end
+exact_wave_factory(params) = x -> SVector(sin(2π * (x[1] - params[:c] * x[end])))
 
-config = SimulationConfig(
-    :my_wave_solver, shared, methods, [:upwind];
-    ref_func_name = :exact_wave
+config = SimulationConfig(shared, methods, [:upwind];
+    reference = :exact_wave_factory,
 )
+run_all_simulations(config; calculate_stats = true)
 ```
+
+The reference may return an `SVector`, a tuple/vector or (for scalar fields) a plain number. It is evaluated once at every grid node or particle, in parallel. Statistics that come out entirely `NaN` (for example errors without a reference) are dropped.
+
+Methods whose name contains a word starting with `analytic`, `reference`, `exact`, `baseline` or `true` (e.g. `:analytic`, `:exact_solution`) are treated as reference methods and skipped by the pipeline; frontends can generate them on demand with [`generate_reference_simdata`](@ref).
 
 ## 3. Custom Post-Processing
 
-If you need to mutate your data immediately after it is generated (e.g., filtering out noise, computing derived fields, or triggering external plotting scripts), use `post_process_name`. The function must accept an `AbstractSimData` object and return a `Bool`. If it returns `true`, the backend automatically overwrites the dataset on disk to save your modifications.
+`postprocess` names a function that receives every dataset after the statistics pass. Mutate the data as you like and return `true` to save the changes; any other return value (including `nothing`) leaves the file untouched.
 
 ```julia
-function filter_results(sim_data)
-    # Mutate data...
-    return true # Triggers a disk save
+function add_maximum(data)
+    add_stat!(data, :maximum, maximum(v -> v[1], data.u), Symbol[])
+    return true   # save the modified dataset
 end
 
-config = SimulationConfig(
-    :my_wave_solver, shared, methods, [:upwind];
-    post_process_name = :filter_results
-)
+config = SimulationConfig(shared, methods, [:upwind]; postprocess = :add_maximum)
 ```
 
-## 4. Source Files Tracking
+## 4. Source Files
 
-For strict academic reproducibility, you can pass a list of file paths to `source_files`. Notably, every file listed here is automatically loaded into the target module before execution begins. This ensures your solvers and reference functions are always compiled and available, while also keeping a record of the specific scripts used to generate the batch.
+`sources` lists files that are included into the target module at the start of [`run_all_simulations`](@ref), so your solvers and reference functions are always defined and up to date. For reproducibility, the SHA-256 digest of every source file is stored in each newly written data file (entry `"sources"`, mapping the absolute path to its digest).
 
 ```julia
-config = SimulationConfig(
-    :my_wave_solver, shared, methods, [:upwind];
-    source_files = ["src/wave_equations.jl", "src/boundary_conditions.jl"]
+config = SimulationConfig(shared, methods, [:upwind];
+    sources = ["src/wave_equations.jl", "src/boundary_conditions.jl"],
 )
 ```
+
+## 5. Execution Options
+
+```julia
+run_all_simulations(config;
+    force_overwrite = false,   # rerun and recompute everything
+    calculate_stats = false,   # pass 2: evaluate registered statistics
+    post_process    = true,    # pass 3: run `config.postprocess`
+    parallel        = false,   # pass 1 over Julia threads
+)
+```
+
+- Existing data is never recomputed unless `force_overwrite = true`; statistics are only evaluated for datasets that miss them (or whose kept dimensions changed).
+- A failing solver, statistic or post-processing step is logged with its parameters and the batch continues.
+- Solvers may return `NoSimData()` (or `nothing`) when there is nothing to store.
+- If a solver modifies its parameters, the result is still stored under the parameters of the task (with a warning), so it can always be found again.
+- Functions defined while the pipeline runs (e.g. through `sources`) are called in the latest world age.
