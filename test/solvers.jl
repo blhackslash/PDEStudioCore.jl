@@ -78,6 +78,13 @@ function static_field_solver(params::ParamDict)
     return create_sim_data((x, y), [xi + yi for xi in x, yi in y], params)  # static scalar field
 end
 
+# Counts its calls, so tests can tell a cached run from a rerun.
+SOLVER_CALLS = Ref(0)
+function counting_solver(params::ParamDict)
+    SOLVER_CALLS[] += 1
+    return advection_solver_1d(params)
+end
+
 # --- Custom statistics used throughout the tests ---
 PDEStudioCore.register_stat!(:pointwise_diff, :all)
 function PDEStudioCore.calc_stat(::Val{:pointwise_diff}, fixed_coords, u, ana, domain::DomainInfo)

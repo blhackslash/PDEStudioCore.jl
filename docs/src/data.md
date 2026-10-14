@@ -75,6 +75,7 @@ Data lives in `<save path>/data/<timestamp>_<sha256>.jld2`. The hash is computed
 | `"raw"` | the native dataset |
 | `"native"`, `"params"`, `"stat_keys"`, `"registry"`, `"shape"` | fast metadata, read without loading the data (`"shape"` is `size(u)`, or time steps and total particle count for Lagrangian data) |
 | `"evaluated_stats"` | statistics already evaluated for this data |
+| `"evaluated_with_reference"` | whether a reference function was available when they were evaluated |
 | `"sources"` | SHA-256 digests of the source files (pipeline runs with `sources`) |
 | `"conv_L"`, `"conv_E_<n1>x<n2>…"` | cached conversions |
 

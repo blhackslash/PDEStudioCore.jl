@@ -126,6 +126,40 @@ end
     @test POST_CALLS[] == 2  # post-processing ran for the two datasets that exist
 end
 
+@testset "Pipeline: statistics are retried once a reference exists" begin
+    SOLVER_CALLS[] = 0
+    shared = create_param_dict(:N => 12, :scheme => "upwind", :cfl => 0.5, :sim_func_name => :counting_solver)
+    cfg_noref = SimulationConfig(shared)
+    run_all_simulations(cfg_noref; force_overwrite = true, calculate_stats = true)
+    p = only(generate_tasks(cfg_noref))
+    @test SOLVER_CALLS[] == 1
+    @test haskey(load_sim_data(p).stats, :mass) && !haskey(load_sim_data(p).stats, :l1error)
+    entries = load_sim_data(calculate_hash(get_clean_params(p))[1:12])
+    @test entries["evaluated_with_reference"] == false
+
+    # Without a reference nothing is recomputed ...
+    file = get_file_name(p)
+    stamp = mtime(file)
+    sleep(0.05)
+    run_all_simulations(cfg_noref; calculate_stats = true)
+    @test mtime(file) == stamp && SOLVER_CALLS[] == 1
+
+    # ... but adding a reference evaluates the dropped error statistics without rerunning the solver
+    cfg_ref = SimulationConfig(shared; reference = :exact_advection_factory)
+    run_all_simulations(cfg_ref; calculate_stats = true)
+    @test SOLVER_CALLS[] == 1
+    @test haskey(load_sim_data(p).stats, :l1error)
+
+    # force_stats recomputes statistics but still does not rerun the solver
+    stamp = mtime(get_file_name(p))
+    sleep(0.05)
+    run_all_simulations(cfg_ref; calculate_stats = true, force_stats = true)
+    @test SOLVER_CALLS[] == 1 && mtime(get_file_name(p)) != stamp
+
+    # A sweep without values produces no tasks (and says so)
+    @test isempty(@test_logs (:warn, r"no values") match_mode = :any generate_tasks(SimulationConfig(shared; varied = Dict(:N => Int[]))))
+end
+
 @testset "Pipeline: source files" begin
     src = joinpath(mktempdir(), "sourced_solver.jl")
     write(src, """

@@ -240,8 +240,10 @@ function calculate_all_stats!(sim_data::AbstractSimData, ref_func = nothing; for
                   "(this looks like a converted or reference dataset). Pass `save = false` for derived datasets."
         else
             path = save_sim_data(sim_data; overwrite = changed, verbose = false)
-            # Remember what was evaluated, so the pipeline does not reload data for stats that came out NaN.
+            # Remember what was evaluated (and whether a reference was available), so the pipeline does
+            # not reload data for stats that came out NaN, but retries them once a reference exists.
             _set_key!(path, "evaluated_stats", names)
+            _set_key!(path, "evaluated_with_reference", ref_func !== nothing)
         end
     end
     return sim_data
