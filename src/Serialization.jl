@@ -7,7 +7,8 @@
 
 Converts a value into a Julia-literal-like string (the basis of the parameter hash).
 Top-level strings are written unquoted, strings inside containers are quoted, functions become
-`"Closure"` and custom structs are written as `TypeName(field=value, ...)`.
+`"Closure"`, enum values are written as `TypeName.value` and custom structs as
+`TypeName(field=value, ...)`.
 """
 function val2str(v; top_level::Bool = true)
     if v isa AbstractString && isempty(v)
@@ -16,6 +17,9 @@ function val2str(v; top_level::Bool = true)
         return "Closure"
     elseif isa(v, Val)
         return string(v)
+    elseif isa(v, Enum)
+        # Enums have no fields, so the generic struct branch would reduce every value to the type name.
+        return string(typeof(v).name.name, ".", Symbol(v))
     elseif isa(v, Symbol)
         return repr(v)
     elseif isa(v, AbstractString)
@@ -147,7 +151,8 @@ function str2val(val_str::AbstractString)
     (s == "<empty>" || isempty(s)) && return ""
     try
         return _literal(Meta.parse(s))
-    catch
+    catch e
+        e isa InterruptException && rethrow()
         return replace(s, r"^\"|\"$" => "")
     end
 end

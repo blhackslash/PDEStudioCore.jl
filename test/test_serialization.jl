@@ -1,3 +1,5 @@
+@enum TestColor TestColor_red TestColor_blue
+
 @testset "Serialization primitives (val2str & str2val)" begin
     # Base primitives & edge cases
     @test val2str("") == "<empty>"
@@ -7,6 +9,10 @@
     @test val2str(:sample_sym) == ":sample_sym" && str2val(":sample_sym") === :sample_sym
     @test val2str(Float64) == "Float64" && str2val("Float64") === Float64
     @test val2str(missing) == "Missing"
+    # Enum values are distinguishable (they have no fields, so they are written by name)
+    @test val2str(TestColor_red) == "TestColor.TestColor_red" && str2val("TestColor.TestColor_red") == "TestColor.TestColor_red"
+    @test calculate_hash(Dict(:c => TestColor_red)) != calculate_hash(Dict(:c => TestColor_blue))
+    @test calculate_hash(Dict(:c => TestColor_red)) == calculate_hash(get_clean_params(Dict(:c => TestColor_red)))
 
     # Strings: unquoted at top level, quoted inside containers
     @test val2str("plain_str"; top_level = true) == "plain_str"
