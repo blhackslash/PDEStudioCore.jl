@@ -24,6 +24,7 @@ end
     @test dom.stat_registry[:mass] == :time
     @test !haskey(reg, :Solution)  # the registry is copied, never aliased
     @test has_time(dom) && get_time_dim(dom) == 2
+    @test !has_time(NoSimData()) && get_time_dim(NoSimData()) === nothing
     @test_throws ArgumentError DomainInfo{2, Float64}((:t, :x), (0.0, 0.0), (1.0, 1.0), (0.1, 0.1), :t, reg)
     @test_throws ArgumentError DomainInfo{2, Float64}((:x, :x), (0.0, 0.0), (1.0, 1.0), (0.1, 0.1), nothing, reg)
     @test_throws ArgumentError DomainInfo{2, Float64}((:x,), (0.0, 0.0), (1.0, 1.0), (0.1, 0.1), nothing, reg)
@@ -39,6 +40,7 @@ end
     # Direct construction, no create_sim_data involved
     sim = ESimData{2, 1, 1, Float64}(Dict(:a => 1), domain, (x, t), u)
     @test sim.stats isa StatsView
+    @test has_time(sim) && get_time_dim(sim) == 2
     @test haskey(sim.stats, :Solution) && :Solution in keys(sim.stats)
     @test sim.stats[:Solution] === sim.u
     @test length(sim.stats) == 1
@@ -57,6 +59,12 @@ end
     @test_throws DimensionMismatch (sim.u = u[1:2, :])
     @test_throws ArgumentError delete!(sim.stats, :Solution)
     @test_throws ArgumentError add_stat!(sim, :Solution, u, :all)
+
+    # Assigning the whole stats dictionary converts values like `setindex!` does
+    sim3 = ESimData(Dict(:a => 1), domain, (x, t), u)
+    sim3.stats[:one] = 1.0
+    sim3.stats = Dict(:Solution => u, :two => 2.0)
+    @test sim3.stats[:two] === SVector(2.0) && !haskey(sim3.stats, :one) && sim3.u == u
 
     # Derived statistics live next to the solution (numbers are stored as SVectors)
     sim.stats[:copy] = u

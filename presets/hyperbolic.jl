@@ -11,7 +11,6 @@ register_stat!(:relative_mass, :time)
 register_stat!(:spacetime_relative_mass, Symbol[])
 register_stat!(:mass_error, :time)
 register_stat!(:mass_signed_error, :time)
-register_stat!(:wave_position, :time)
 
 # ==============================================================================
 # --- STANDARD METRICS ---
@@ -34,20 +33,6 @@ end
 
 function calc_stat(::Val{:wave_height}, fixed_coords, u, ana, domain::DomainInfo)
     return reduce((a, b) -> max.(a, b), u)
-end
-
-function calc_stat(::Val{:wave_position}, fixed_coords, u, ana, domain::DomainInfo)
-    kept_dims = get_kept_dims(:wave_position, domain)
-    int_idx = findfirst(k -> k ∉ kept_dims, domain.dim_keys)
-    int_idx = isnothing(int_idx) ? 1 : int_idx 
-
-    M = length(eltype(u))
-    T = eltype(eltype(u)) # Dynamically get T
-    return SVector{M, T}(ntuple(M) do c
-        max_idx = argmax(map(v -> v[c], u))
-        local_idx = max_idx isa CartesianIndex ? max_idx[1] : max_idx
-        T(domain.mins[int_idx] + (local_idx - 1) * domain.spacing[int_idx])
-    end)
 end
 
 

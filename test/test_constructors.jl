@@ -98,6 +98,12 @@ end
     @test_throws DimensionMismatch add_stat!(s, :bad_series, [1.0, 2.0, 3.0], :time)
     add_stat!(s, :tag, [[1.0, 2.0], [1.0, 2.0, 3.0]], :all)
     @test s.stats[:tag][2][3] == SVector(3.0)
+
+    # Non-finite positions (e.g. particles that left the domain) do not poison the bounding box
+    x_nan = [[SVector(0.0), SVector(0.5), SVector(1.0)], [SVector(0.1), SVector(NaN), SVector(Inf)]]
+    s5 = create_sim_data(x_nan, [[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]], t, p)
+    @test s5.domain.mins[1] == 0.0 && s5.domain.maxs[1] == 1.0 && isfinite(s5.domain.spacing[1])
+    @test size(convert_to_eulerian(s5, (5, 2)).u) == (5, 2)
 end
 
 @testset "2+1D Eulerian SimData creation" begin

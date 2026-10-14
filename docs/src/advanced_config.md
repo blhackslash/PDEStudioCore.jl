@@ -71,12 +71,13 @@ config = SimulationConfig(shared, methods, [:upwind];
 run_all_simulations(config;
     force_overwrite = false,   # rerun and recompute everything
     calculate_stats = false,   # pass 2: evaluate registered statistics
+    force_stats = false,       # recompute all statistics (solvers are not rerun)
     post_process    = true,    # pass 3: run `config.postprocess`
     parallel        = false,   # pass 1 over Julia threads
 )
 ```
 
-- Existing data is never recomputed unless `force_overwrite = true`; statistics are only evaluated for datasets that miss them (or whose kept dimensions changed).
+- Existing data is never recomputed unless `force_overwrite = true`; statistics are only evaluated for datasets that miss them (or whose kept dimensions changed, or that were evaluated without a reference that is now configured). `force_stats = true` recomputes the statistics only.
 - A failing solver, statistic or post-processing step is logged with its parameters and the batch continues.
 - Solvers may return `NoSimData()` (or `nothing`) when there is nothing to store.
 - If a solver modifies its parameters, the result is still stored under the parameters of the task (with a warning), so it can always be found again.

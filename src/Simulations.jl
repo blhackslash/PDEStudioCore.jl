@@ -35,6 +35,7 @@ end
     assemble_params(shared::AbstractDict, methods::AbstractDict, method_name::Symbol)
 
 Shared parameters (minus the method's ignored keys) overridden by the method's own parameters.
+The `:ignore` entry itself only controls the assembly and is not part of the result (or the hash).
 """
 function assemble_params(shared_params::AbstractDict, method_collection::AbstractDict, method_name::Symbol)
     ignore_keys = get_ignore_keys(method_collection, method_name)
@@ -43,12 +44,19 @@ function assemble_params(shared_params::AbstractDict, method_collection::Abstrac
         Symbol(key) in ignore_keys || (params[Symbol(key)] = val)
     end
     for (key, val) in get(method_collection, method_name, ParamDict())
+        Symbol(key) === :ignore && continue
         params[Symbol(key)] = val
     end
     return params
 end
 
-_tuple_index(s::AbstractString) = s in ("x", "1") ? 1 : s in ("y", "2") ? 2 : s in ("z", "3") ? 3 : tryparse(Int, s)
+function _tuple_index(s::AbstractString)
+    s in ("x", "1") && return 1
+    s in ("y", "2") && return 2
+    s in ("z", "3") && return 3
+    idx = tryparse(Int, s)
+    return idx !== nothing && idx >= 1 ? idx : nothing
+end
 
 # Splits a varied key into (base key, tuple index); the index is `nothing` for ordinary keys.
 function _split_varied_key(k::Symbol)
@@ -121,6 +129,9 @@ duplicates removed). Handy to load the results of a sweep:
 function generate_tasks(config::SimulationConfig)
     vkeys = sort!(collect(keys(config.varied)))
     vvals = Vector[config.varied[k] for k in vkeys]
+    for (k, v) in zip(vkeys, vvals)
+        isempty(v) && @warn "Varied parameter :$k has no values: the Cartesian product is empty, so no task is generated."
+    end
     methods = isempty(config.methods) && isempty(config.defaults) ? Union{Nothing, Symbol}[nothing] :
               Union{Nothing, Symbol}[m for m in config.defaults if !is_reference_method(m)]
 
@@ -215,9 +226,10 @@ function _stats_task(params::ParamDict, ref_factory, required::Vector{Symbol}, f
     try
         path = _find_file(params)
         path === nothing && return :missing
-        (force_overwrite || _needs_stats(path, required)) || return :cached
+        has_reference = ref_factory !== nothing
+        (force_overwrite || _needs_stats(path, required, has_reference)) || return :cached
         sim_data = _load_key(path, "raw")
-        ref_func = ref_factory === nothing ? nothing : ref_factory(params)
+        ref_func = has_reference ? ref_factory(params) : nothing
         calculate_all_stats!(sim_data, ref_func; force_overwrite = force_overwrite)
         return :ran
     catch e
@@ -239,15 +251,23 @@ function _post_task(params::ParamDict, post_func)
     end
 end
 
-# Whether a file is missing (or has stale) entries for any of the required statistics.
-function _needs_stats(path::AbstractString, required::Vector{Symbol})
+# Whether a file is missing (or has stale) entries for any of the required statistics. A statistic that
+# was evaluated without a reference and dropped (all NaN) is due again once a reference is available.
+function _needs_stats(path::AbstractString, required::Vector{Symbol}, has_reference::Bool = false)
     return jldopen(path, "r") do file
         saved = haskey(file, "stat_keys") ? file["stat_keys"] : Symbol[]
         evaluated = haskey(file, "evaluated_stats") ? file["evaluated_stats"] : Symbol[]
+        evaluated_with_reference = haskey(file, "evaluated_with_reference") ? file["evaluated_with_reference"] : false
         file_registry = haskey(file, "registry") ? file["registry"] : nothing
         registry = get_stat_registry()
         for k in required
-            (k in saved || k in evaluated) || return true
+            if k in saved
+                # present: stale only if the kept dimensions changed
+            elseif k in evaluated
+                has_reference && !evaluated_with_reference && return true
+            else
+                return true
+            end
             file_registry === nothing || get(file_registry, k, nothing) == registry[k] || return true
         end
         return false
@@ -256,20 +276,22 @@ end
 
 """
     run_all_simulations(config::SimulationConfig; force_overwrite = false, calculate_stats = false,
-                        post_process = true, parallel = false)
+                        force_stats = false, post_process = true, parallel = false)
 
 Runs the complete pipeline for a [`SimulationConfig`](@ref):
 0. includes `config.sources` into the target module,
 1. runs every task of [`generate_tasks`](@ref) whose data is not on disk yet (all of them with
    `force_overwrite`), in parallel over Julia threads with `parallel = true`,
 2. with `calculate_stats = true`, evaluates missing statistics using the reference factory
-   `config.reference` (`params -> (x -> u_exact)`),
+   `config.reference` (`params -> (x -> u_exact)`); statistics that were dropped earlier for lack of
+   a reference are evaluated again once a reference is configured. `force_stats = true` recomputes
+   every registered statistic without rerunning the simulations,
 3. with `post_process = true`, calls `config.postprocess(data)` for every dataset and saves the
    data when it returns `true`.
 Failures of individual tasks are logged and do not abort the batch.
 """
 function run_all_simulations(config::SimulationConfig; force_overwrite::Bool = false, calculate_stats::Bool = false,
-                             post_process::Bool = true, parallel::Bool = false)
+                             force_stats::Bool = false, post_process::Bool = true, parallel::Bool = false)
     @info "Started simulation pipeline."
     _load_sources(config.sources)
     tasks = generate_tasks(config)
@@ -308,7 +330,7 @@ function run_all_simulations(config::SimulationConfig; force_overwrite::Bool = f
         required = sort!(Symbol[k for k in keys(get_stat_registry()) if k !== :Solution])
         progress = Progress(n; desc = "Calculating stats...")
         for params in tasks
-            Base.invokelatest(_stats_task, params, ref_factory, required, force_overwrite)
+            Base.invokelatest(_stats_task, params, ref_factory, required, force_overwrite || force_stats)
             next!(progress)
         end
     end

@@ -166,6 +166,7 @@ function _particle_bounds(x::Vector{Vector{SVector{DS, T}}}) where {DS, T}
     hi = SVector{DS, T}(ntuple(_ -> typemin(T), Val(DS)))
     found = false
     for step in x, p in step
+        all(isfinite, p) || continue  # e.g. NaN for particles that left the domain
         lo = min.(lo, p)
         hi = max.(hi, p)
         found = true

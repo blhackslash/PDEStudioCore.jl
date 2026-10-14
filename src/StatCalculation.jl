@@ -240,8 +240,10 @@ function calculate_all_stats!(sim_data::AbstractSimData, ref_func = nothing; for
                   "(this looks like a converted or reference dataset). Pass `save = false` for derived datasets."
         else
             path = save_sim_data(sim_data; overwrite = changed, verbose = false)
-            # Remember what was evaluated, so the pipeline does not reload data for stats that came out NaN.
+            # Remember what was evaluated (and whether a reference was available), so the pipeline does
+            # not reload data for stats that came out NaN, but retries them once a reference exists.
             _set_key!(path, "evaluated_stats", names)
+            _set_key!(path, "evaluated_with_reference", ref_func !== nothing)
         end
     end
     return sim_data
@@ -255,11 +257,15 @@ end
     return SVector{L, T}(ntuple(d -> axes[kept_idx[d]][I[d]], Val(L)))
 end
 
-function _batch_stat_calc!(res, u_slices, ana_slices, axes, kept_idx, domain, stat_name, ::Val{L}, ::Type{T}) where {L, T}
+# The statistic is passed as `Val{S}` so that the loop body is compiled once per statistic and the
+# user's `calc_stat` method is dispatched statically instead of once per slice.
+function _batch_stat_calc!(res, u_slices, ana_slices, axes, kept_idx, domain, stat::Val, ::Val{L}, ::Val{M},
+                           ::Type{T}) where {L, M, T}
+    cart = CartesianIndices(u_slices)
     @batch for i in eachindex(u_slices)
-        I = CartesianIndices(u_slices)[i]
+        I = cart[i]
         fixed_coords = _extract_coords(axes, kept_idx, I, Val(L), T)
-        res[i] = calc_stat(Val(stat_name), fixed_coords, vec(u_slices[i]), vec(ana_slices[i]), domain)
+        res[i] = _as_svector(calc_stat(stat, fixed_coords, vec(u_slices[i]), vec(ana_slices[i]), domain), Val(M), T)
     end
     return res
 end
@@ -268,19 +274,24 @@ end
     _calc_stat!(sim_data, u_ana, stat_name)
 
 Internal: slices the data along the kept dimensions of `stat_name` and evaluates `calc_stat` on
-every slice (multithreaded). Returns `nothing` if the kept dimensions are not supported.
+every slice (multithreaded). Every result is converted to an `SVector{M, T}` (numbers are
+broadcast over the components). Returns `nothing` if the kept dimensions are not supported.
 """
-function _calc_stat!(sim_data::ESimData{D, DS, M, T}, u_ana, stat_name::Symbol) where {D, DS, M, T}
-    kept_idx = get_kept_indices(stat_name, sim_data.domain)
-    if isempty(kept_idx)  # scalar (converted, like the array results, to SVector{M, T})
-        value = calc_stat(Val(stat_name), SVector{0, T}(), vec(sim_data.u), vec(u_ana), sim_data.domain)
+function _calc_stat!(sim_data::ESimData, u_ana, stat_name::Symbol)
+    # `Val(stat_name)` is a runtime value: this is the one dynamic dispatch, the kernels below are specialised.
+    return _calc_stat_eulerian(sim_data, u_ana, Val(stat_name), get_kept_indices(stat_name, sim_data.domain))
+end
+
+function _calc_stat_eulerian(sim_data::ESimData{D, DS, M, T}, u_ana, stat::Val, kept_idx::Vector{Int}) where {D, DS, M, T}
+    if isempty(kept_idx)  # scalar
+        value = calc_stat(stat, SVector{0, T}(), vec(sim_data.u), vec(u_ana), sim_data.domain)
         return _as_svector(value, Val(M), T)
     end
     L = length(kept_idx)
     res = Array{SVector{M, T}, L}(undef, ntuple(d -> length(sim_data.axes[kept_idx[d]]), L)...)
     u_slices = eachslice(sim_data.u, dims = Tuple(kept_idx))
     ana_slices = eachslice(u_ana, dims = Tuple(kept_idx))
-    _batch_stat_calc!(res, u_slices, ana_slices, sim_data.axes, kept_idx, sim_data.domain, stat_name, Val(L), T)
+    _batch_stat_calc!(res, u_slices, ana_slices, sim_data.axes, kept_idx, sim_data.domain, stat, Val(L), Val(M), T)
     return res
 end
 
@@ -288,20 +299,23 @@ end
 # --- Lagrangian reductions ---
 # ==============================================================================
 
-function _calc_stat!(sim_data::LSimData{D, DS, M, T}, u_ana, stat_name::Symbol) where {D, DS, M, T}
+function _calc_stat!(sim_data::LSimData, u_ana, stat_name::Symbol)
+    return _calc_stat_lagrangian(sim_data, u_ana, Val(stat_name), get_kept_dims(stat_name, sim_data.domain))
+end
+
+function _calc_stat_lagrangian(sim_data::LSimData{D, DS, M, T}, u_ana, stat::Val{S}, kept::Vector{Symbol}) where {D, DS, M, T, S}
     domain = sim_data.domain
-    kept = get_kept_dims(stat_name, domain)
     u = sim_data.u
     t = sim_data.t
     Nt = length(t)
 
     if isempty(kept)  # scalar over all particles (and time steps)
-        value = calc_stat(Val(stat_name), SVector{0, T}(), reduce(vcat, u), reduce(vcat, u_ana), domain)
+        value = calc_stat(stat, SVector{0, T}(), reduce(vcat, u), reduce(vcat, u_ana), domain)
         return _as_svector(value, Val(M), T)
     elseif D > DS && kept == [domain.time_dim]  # time series
         series = Vector{SVector{M, T}}(undef, Nt)
         @batch for n in 1:Nt
-            series[n] = calc_stat(Val(stat_name), SVector{1, T}(t[n]), u[n], u_ana[n], domain)
+            series[n] = _as_svector(calc_stat(stat, SVector{1, T}(t[n]), u[n], u_ana[n], domain), Val(M), T)
         end
         return series
     elseif length(kept) == D  # per-particle field
@@ -312,13 +326,13 @@ function _calc_stat!(sim_data::LSimData{D, DS, M, T}, u_ana, stat_name::Symbol) 
             values = Vector{SVector{M, T}}(undef, length(x_n))
             for p in eachindex(x_n)
                 fixed = D > DS ? SVector{D, T}(x_n[p]..., t[n]) : SVector{D, T}(x_n[p]...)
-                values[p] = calc_stat(Val(stat_name), fixed, (u[n][p],), (u_ana[n][p],), domain)
+                values[p] = _as_svector(calc_stat(stat, fixed, (u[n][p],), (u_ana[n][p],), domain), Val(M), T)
             end
             field[n] = values
         end
         return field
     end
-    @debug "Statistic :$stat_name keeps $kept, which is not supported for Lagrangian data; skipping."
+    @debug "Statistic :$S keeps $kept, which is not supported for Lagrangian data; skipping."
     return nothing
 end
 

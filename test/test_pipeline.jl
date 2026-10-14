@@ -85,6 +85,13 @@ end
     @test length(tasks) == 4 && length(grid_indices) == 4
     @test [t[:Ns] for t in tasks] == [(20, 15), (40, 15), (20, 30), (40, 30)]
     @test all(t[:Ns] isa Tuple{Int, Int} for t in tasks)
+    # `__0` is not a tuple entry: the key is an ordinary (here absent) parameter
+    tasks0, _ = generate_method_tasks(base_params, [:Ns__0], [[1, 2]])
+    @test all(t -> t == base_params, tasks0)
+
+    # `:ignore` drops shared keys but is not itself a parameter (so it is not hashed)
+    ign = assemble_params(create_param_dict(:a => 1, :b => 2), create_method_dict(:m => Dict(:c => 3, :ignore => [:b])), :m)
+    @test ign == create_param_dict(:a => 1, :c => 3)
 
     shared = create_param_dict(:Ns => (10, 10), :cfl => 0.5, :sim_func_name => :dummy_tuple_solver)
     methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"))
@@ -117,6 +124,40 @@ end
     mutated = only(filter(t -> t[:sim_func_name] === :mutating_solver, tasks))
     @test !haskey(load_sim_data(mutated).params, :injected)
     @test POST_CALLS[] == 2  # post-processing ran for the two datasets that exist
+end
+
+@testset "Pipeline: statistics are retried once a reference exists" begin
+    SOLVER_CALLS[] = 0
+    shared = create_param_dict(:N => 12, :scheme => "upwind", :cfl => 0.5, :sim_func_name => :counting_solver)
+    cfg_noref = SimulationConfig(shared)
+    run_all_simulations(cfg_noref; force_overwrite = true, calculate_stats = true)
+    p = only(generate_tasks(cfg_noref))
+    @test SOLVER_CALLS[] == 1
+    @test haskey(load_sim_data(p).stats, :mass) && !haskey(load_sim_data(p).stats, :l1error)
+    entries = load_sim_data(calculate_hash(get_clean_params(p))[1:12])
+    @test entries["evaluated_with_reference"] == false
+
+    # Without a reference nothing is recomputed ...
+    file = get_file_name(p)
+    stamp = mtime(file)
+    sleep(0.05)
+    run_all_simulations(cfg_noref; calculate_stats = true)
+    @test mtime(file) == stamp && SOLVER_CALLS[] == 1
+
+    # ... but adding a reference evaluates the dropped error statistics without rerunning the solver
+    cfg_ref = SimulationConfig(shared; reference = :exact_advection_factory)
+    run_all_simulations(cfg_ref; calculate_stats = true)
+    @test SOLVER_CALLS[] == 1
+    @test haskey(load_sim_data(p).stats, :l1error)
+
+    # force_stats recomputes statistics but still does not rerun the solver
+    stamp = mtime(get_file_name(p))
+    sleep(0.05)
+    run_all_simulations(cfg_ref; calculate_stats = true, force_stats = true)
+    @test SOLVER_CALLS[] == 1 && mtime(get_file_name(p)) != stamp
+
+    # A sweep without values produces no tasks (and says so)
+    @test isempty(@test_logs (:warn, r"no values") match_mode = :any generate_tasks(SimulationConfig(shared; varied = Dict(:N => Int[]))))
 end
 
 @testset "Pipeline: source files" begin
