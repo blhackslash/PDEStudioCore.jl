@@ -24,6 +24,7 @@ end
     @test dom.stat_registry[:mass] == :time
     @test !haskey(reg, :Solution)  # the registry is copied, never aliased
     @test has_time(dom) && get_time_dim(dom) == 2
+    @test !has_time(NoSimData()) && get_time_dim(NoSimData()) === nothing
     @test_throws ArgumentError DomainInfo{2, Float64}((:t, :x), (0.0, 0.0), (1.0, 1.0), (0.1, 0.1), :t, reg)
     @test_throws ArgumentError DomainInfo{2, Float64}((:x, :x), (0.0, 0.0), (1.0, 1.0), (0.1, 0.1), nothing, reg)
     @test_throws ArgumentError DomainInfo{2, Float64}((:x,), (0.0, 0.0), (1.0, 1.0), (0.1, 0.1), nothing, reg)
@@ -39,6 +40,7 @@ end
     # Direct construction, no create_sim_data involved
     sim = ESimData{2, 1, 1, Float64}(Dict(:a => 1), domain, (x, t), u)
     @test sim.stats isa StatsView
+    @test has_time(sim) && get_time_dim(sim) == 2
     @test haskey(sim.stats, :Solution) && :Solution in keys(sim.stats)
     @test sim.stats[:Solution] === sim.u
     @test length(sim.stats) == 1

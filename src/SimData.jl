@@ -138,6 +138,15 @@ function LSimData(params::AbstractDict, domain::DomainInfo{D, T}, t::AbstractVec
 end
 
 has_time(data::AbstractSimData) = has_time(data.domain)
+has_time(::NoSimData) = false
+
+"""
+    get_time_dim(data::AbstractSimData)
+
+Index of the time axis of a dataset (see [`get_time_dim(::DomainInfo)`](@ref)); `nothing` for static data.
+"""
+get_time_dim(data::AbstractSimData) = get_time_dim(data.domain)
+get_time_dim(::NoSimData) = nothing
 
 # ==============================================================================
 # --- Struct-level coupling of `:Solution` ---
