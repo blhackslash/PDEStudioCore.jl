@@ -88,3 +88,7 @@ end
 function PDEStudioCore.calc_stat(::Val{:total}, fixed_coords, u, ana, domain::DomainInfo)
     return sum(u) * get_integration_measure(:total, domain)
 end
+
+# A statistic returning a plain number (instead of an SVector) for every time slice.
+PDEStudioCore.register_stat!(:slice_count, :time)
+PDEStudioCore.calc_stat(::Val{:slice_count}, fixed_coords, u, ana, domain::DomainInfo) = length(u)

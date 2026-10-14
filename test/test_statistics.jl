@@ -69,6 +69,12 @@ end
     sim_noref = advection_solver_1d(create_param_dict(:N => 16, :test => "noref"))
     calculate_all_stats!(sim_noref; save = false)
     @test haskey(sim_noref.stats, :mass) && !haskey(sim_noref.stats, :l1error)
+
+    # `calc_stat` may return plain numbers; they are stored as SVectors like everything else
+    @test sim_noref.stats[:slice_count] == fill(SVector(Float64(size(sim_noref.u, 1))), size(sim_noref.u, 2))
+    sim_L = particle_solver_1d(create_param_dict(:N => 4, :test => "slice_count"))
+    calculate_all_stats!(sim_L; save = false)
+    @test sim_L.stats[:slice_count] == fill(SVector(4.0), 3)
 end
 
 @testset "Lagrangian statistics & references" begin
