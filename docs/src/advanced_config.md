@@ -25,6 +25,19 @@ varied = Dict(
 )
 ```
 
+This sweeps the entries independently (here 2 × 2 runs). To change several entries *together*, e.g. for a
+convergence study on square grids, address them with one key: `__xy` (`__xz`, `__yz`, `__xyz`) sets the named
+entries and `__all` every entry of the tuple to the same value. The swept values are then plain numbers, which
+frontends can use directly as slider positions and axis values:
+
+```julia
+varied = Dict(:Ns__all => [50, 100, 200])   # (50, 50), (100, 100), (200, 200)
+```
+
+`__all` works for tuples of any length (the shape comes from the tuple in the parameters), so one sweep
+definition serves 1D, 2D and 3D setups. The generated parameters—and therefore the data files—are identical to
+those of an explicit tuple sweep such as `:Ns => [(50, 50), (100, 100), (200, 200)]`.
+
 ## 2. Analytical Reference Functions
 
 Error statistics (L1/L2 errors, …) need the exact solution. Provide the **name of a reference factory**: a function that receives the run's parameters and returns the exact solution as a function of a spacetime coordinate `x::SVector{D}` (`x[end]` is the time for transient data). The factory lets the exact solution depend on the parameters (wave speed, initial condition, …):
