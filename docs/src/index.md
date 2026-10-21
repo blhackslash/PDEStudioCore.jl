@@ -68,7 +68,7 @@ run_all_simulations(config; calculate_stats = true)
 
 *   **`ParamDict` (`Dict{Symbol, Any}`):** the flat, resolved parameters of a single run (e.g. `:N => 100`, `:cfl => 0.2`). It is passed to your solver, and its normalised content is hashed to locate the run on disk.
 *   **`MethodDict` (`Dict{Symbol, ParamDict}`):** method-specific overrides on top of the shared parameters. `:ignore => [:key1, :key2]` removes shared keys for one method.
-*   **`VariedDict` (`Dict{Symbol, Vector}`):** the sweep definition. Keys such as `:Ns__x` sweep a single entry of a tuple parameter.
+*   **`VariedDict` (`Dict{Symbol, Vector}`):** the sweep definition. Keys such as `:Ns__x` sweep a single entry of a tuple parameter, `:Ns__all` all of them together.
 
 String keys are accepted everywhere and converted to `Symbol`s.
 

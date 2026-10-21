@@ -50,28 +50,36 @@ function assemble_params(shared_params::AbstractDict, method_collection::Abstrac
     return params
 end
 
-function _tuple_index(s::AbstractString)
-    s in ("x", "1") && return 1
-    s in ("y", "2") && return 2
-    s in ("z", "3") && return 3
+const _TUPLE_LETTERS = Dict('x' => 1, 'y' => 2, 'z' => 3)
+
+# Tuple entries addressed by the suffix of a varied key: one entry (`x`/`1`, `y`/`2`, `z`/`3`, `<n>`), several
+# entries at once (`xy`, `yz`, `xyz`, …; a sorted `Vector{Int}`) or `:all` (every entry of the tuple).
+# Returns `nothing` if the text is not a tuple suffix.
+function _tuple_indices(s::AbstractString)
+    s == "all" && return :all
     idx = tryparse(Int, s)
-    return idx !== nothing && idx >= 1 ? idx : nothing
+    idx !== nothing && return idx >= 1 ? [idx] : nothing
+    (isempty(s) || !all(c -> haskey(_TUPLE_LETTERS, c), s)) && return nothing
+    return sort!(unique!([_TUPLE_LETTERS[c] for c in s]))
 end
 
-# Splits a varied key into (base key, tuple index); the index is `nothing` for ordinary keys.
+# Splits a varied key into (base key, tuple entries); the entries are `nothing` for ordinary keys,
+# a `Vector{Int}` or `:all` otherwise (see `_tuple_indices`).
 function _split_varied_key(k::Symbol)
     m = match(r"^(.+)__([a-zA-Z0-9]+)$", String(k))
     m === nothing && return (k, nothing)
-    idx = _tuple_index(m.captures[2])
-    return idx === nothing ? (k, nothing) : (Symbol(m.captures[1]), idx)
+    idxs = _tuple_indices(m.captures[2])
+    return idxs === nothing ? (k, nothing) : (Symbol(m.captures[1]), idxs)
 end
 
 """
     generate_method_tasks(base_params, active_keys, active_values; ignore_keys = Symbol[])
 
 Expands one method's parameters over the Cartesian product of `active_values`. Keys of the form
-`:Ns__x`/`:Ns__1` (`__y`/`__2`, `__z`/`__3`, `__<n>`) set one entry of the tuple parameter `:Ns`.
-Varied keys that are absent from `base_params` (or ignored) are not applied to this method.
+`:Ns__x`/`:Ns__1` (`__y`/`__2`, `__z`/`__3`, `__<n>`) set one entry of the tuple parameter `:Ns`;
+`:Ns__xy` (`__xz`, `__yz`, `__xyz`) sets several entries and `:Ns__all` every entry of the tuple to
+the same swept value. Varied keys that are absent from `base_params` (or ignored) are not applied to
+this method.
 Returns `(tasks, grid_indices)`.
 """
 function generate_method_tasks(base_params::AbstractDict, active_keys::AbstractVector, active_values::AbstractVector;
@@ -81,14 +89,14 @@ function generate_method_tasks(base_params::AbstractDict, active_keys::AbstractV
     ignore = Symbol[Symbol(k) for k in ignore_keys]
 
     varied_std = Tuple{Int, Symbol}[]       # (index into the value tuple, key)
-    varied_tup = Tuple{Int, Symbol, Int}[]  # (index into the value tuple, base key, tuple entry)
+    varied_tup = Tuple{Int, Symbol, Union{Symbol, Vector{Int}}}[]  # (index into the value tuple, base key, tuple entries)
     for (i, k) in enumerate(Symbol.(active_keys))
         k in ignore && continue
-        base_key, idx = _split_varied_key(k)
-        if idx === nothing
+        base_key, idxs = _split_varied_key(k)
+        if idxs === nothing
             push!(varied_std, (i, k))
         elseif !(base_key in ignore)
-            push!(varied_tup, (i, base_key, idx))
+            push!(varied_tup, (i, base_key, idxs))
         end
     end
 
@@ -101,13 +109,15 @@ function generate_method_tasks(base_params::AbstractDict, active_keys::AbstractV
         end
         if !isempty(varied_tup)
             updates = Dict{Symbol, Vector{Any}}()
-            for (i, base_key, idx) in varied_tup
+            for (i, base_key, idxs) in varied_tup
                 haskey(task, base_key) || continue
                 arr = get!(() -> collect(Any, task[base_key]), updates, base_key)
-                while length(arr) < idx
-                    push!(arr, 0.0)
+                for idx in (idxs === :all ? (1:length(arr)) : idxs)
+                    while length(arr) < idx
+                        push!(arr, 0.0)
+                    end
+                    arr[idx] = p_vals[i]
                 end
-                arr[idx] = p_vals[i]
             end
             for (base_key, arr) in updates
                 task[base_key] = all(x -> x isa Integer, arr) ? Tuple(Int.(arr)) : Tuple(arr)

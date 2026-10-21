@@ -21,7 +21,8 @@ const MethodDict = Dict{Symbol, ParamDict}
     VariedDict
 
 Alias for `Dict{Symbol, Vector}`: the parameter sweep. The pipeline runs the Cartesian product of
-all vectors. Keys of the form `:Ns__x`/`:Ns__1` sweep a single entry of the tuple parameter `:Ns`.
+all vectors. Keys of the form `:Ns__x`/`:Ns__1` sweep a single entry of the tuple parameter `:Ns`, `:Ns__xy`
+several entries and `:Ns__all` every entry at once (see [`generate_method_tasks`](@ref)).
 """
 const VariedDict = Dict{Symbol, Vector}
 

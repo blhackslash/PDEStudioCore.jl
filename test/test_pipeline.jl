@@ -89,6 +89,26 @@ end
     tasks0, _ = generate_method_tasks(base_params, [:Ns__0], [[1, 2]])
     @test all(t -> t == base_params, tasks0)
 
+    # Several entries at once: `__all` / `__xy` set them to the same value (square grids)
+    tasks_all, grid_all = generate_method_tasks(base_params, [:Ns__all], [[20, 40]])
+    @test [t[:Ns] for t in tasks_all] == [(20, 20), (40, 40)] && grid_all == [(1,), (2,)]
+    @test all(t[:Ns] isa Tuple{Int, Int} for t in tasks_all)
+    tasks_xy, _ = generate_method_tasks(base_params, [:Ns__xy], [[20, 40]])
+    @test tasks_xy == tasks_all
+    # ... and produce exactly the tasks (hence file hashes) of the explicit tuple sweep
+    tasks_tup, _ = generate_method_tasks(base_params, [:Ns], [[(20, 20), (40, 40)]])
+    @test tasks_all == tasks_tup
+    @test calculate_hash(tasks_all[1]) == calculate_hash(tasks_tup[1])
+    # a subset of the entries keeps the others; the suffix may mix with single-entry keys
+    tasks_xz, _ = generate_method_tasks(create_param_dict(:Ns => (1, 2, 3)), [:Ns__xz, :Ns__y], [[7], [9]])
+    @test tasks_xz[1][:Ns] == (7, 9, 7)
+    @test PDEStudioCore._split_varied_key(:Ns__12) == (:Ns, [12])
+    @test PDEStudioCore._split_varied_key(:Ns__zx) == (:Ns, [1, 3])
+    @test PDEStudioCore._split_varied_key(:Ns__ab) == (:Ns__ab, nothing)   # not a tuple suffix
+    cfg_sq = SimulationConfig(create_param_dict(:Ns => (10, 10), :sim_func_name => :dummy_tuple_solver);
+                              varied = create_varied_dict(:Ns__all => [20, 30]))
+    @test [t[:Ns] for t in generate_tasks(cfg_sq)] == [(20, 20), (30, 30)]
+
     # `:ignore` drops shared keys but is not itself a parameter (so it is not hashed)
     ign = assemble_params(create_param_dict(:a => 1, :b => 2), create_method_dict(:m => Dict(:c => 3, :ignore => [:b])), :m)
     @test ign == create_param_dict(:a => 1, :c => 3)
