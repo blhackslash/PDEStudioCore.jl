@@ -107,4 +107,4 @@ The `dim_keys` tuple of a [`DomainInfo`](@ref) is the *sole identifier* of the a
 
 ## 🚀 Examples
 
-Runnable examples live in the `examples/` directory of the repository; the [Simulation Config](simulation_config.md) page walks through a complete setup step by step. If you are upgrading, see the [Migration Guide](migration.md).
+Runnable examples live in the `examples/` directory of the repository; the [Simulation Config](simulation_config.md) page walks through a complete setup step by step.

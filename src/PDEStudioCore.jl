@@ -25,7 +25,7 @@ export get_stat_registry, set_stat_registry!, reset_stat_registry!, set_stat_pre
 # --- Simulation & data pipeline ---
 export run_all_simulations, generate_tasks, generate_method_tasks, run_smart_simulation
 export load_sim_data, save_sim_data, get_file_name, does_sim_data_exist, list_available_conversions
-export delete_sim_data, rehash_sim_data, check_data, SimFileNotFoundError
+export find_sim_data, delete_sim_data, rehash_sim_data, check_data, SimFileNotFoundError
 export calculate_hash, val2str, str2val, get_clean_params, print_clean_params
 export calculate_all_stats!, generate_reference_simdata, get_time_dim, has_time
 export convert_to_eulerian, convert_to_lagrangian, resample_eulerian

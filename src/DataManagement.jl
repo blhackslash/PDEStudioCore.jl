@@ -54,11 +54,68 @@ function check_data(data::LSimData{D, DS, M, T}) where {D, DS, M, T}
     return _health_frame(data.t, rows, M)
 end
 
+# Parameters stored in a data file (the lightweight "params" entry), or `nothing` if they cannot be read.
+function _file_params(path::AbstractString)
+    try
+        return jldopen(f -> haskey(f, "params") ? f["params"] : nothing, path, "r")
+    catch e
+        @warn "Could not read the parameters of $(basename(path))" exception = e
+        return nothing
+    end
+end
+
+# `path => params` of every data file (newest first) whose stored parameters contain all pairs of
+# `match_params` (keys may be strings or symbols; values are normalised like stored parameters).
+function _files_with_params(match_params::AbstractDict)
+    wanted = Dict(Symbol(k) => _normalize_param(v) for (k, v) in match_params)
+    matched = Pair{String, Any}[]
+    for path in _sort_newest!(_data_files())
+        file_params = _file_params(path)
+        file_params === nothing && continue
+        all(((k, v),) -> haskey(file_params, k) && isequal(file_params[k], v), wanted) || continue
+        push!(matched, path => file_params)
+    end
+    return matched
+end
+
+_param_summary(params, skip) = join(("$k = $(val2str(v))" for (k, v) in sort(collect(params), by = p -> string(first(p)))
+                                     if !(Symbol(k) in skip)), ", ")
+
+"""
+    find_sim_data(match_params = Dict(); io = stdout, verbose = true)
+
+Lists the data files whose stored parameters contain all the given key-value pairs, i.e. any subset of a
+run's parameters (keys may be strings or symbols; an empty filter lists every file). Only the lightweight
+`params` metadata is read. Prints one line per file (newest first) with the parameters that were not part
+of the filter, and returns the file paths.
+
+```julia-repl
+julia> find_sim_data(Dict("N" => 100));
+2 data files with N = 100:
+  2026-10-21_17-45-00_123_3f9a….jld2   cfl = 0.5, scheme = upwind, sim_func_name = :advection_solver_1d
+  2026-10-21_17-44-58_907_b02c….jld2   cfl = 0.5, scheme = lax_friedrichs, sim_func_name = :advection_solver_1d
+```
+"""
+function find_sim_data(match_params::AbstractDict = Dict{Symbol, Any}(); io::IO = stdout, verbose::Bool = true)
+    matched = _files_with_params(match_params)
+    paths = String[first(m) for m in matched]
+    verbose || return paths
+    n = length(paths)
+    filter_str = isempty(match_params) ? "" : " with " * _param_summary(match_params, Set{Symbol}())
+    println(io, n, " data file", n == 1 ? "" : "s", filter_str, n == 0 ? "." : ":")
+    skip = Set(Symbol(k) for k in keys(match_params))
+    for (path, params) in matched
+        extra = _param_summary(params, skip)
+        println(io, "  ", basename(path), isempty(extra) ? "" : "   " * extra)
+    end
+    return paths
+end
+
 """
     delete_sim_data(match_params::AbstractDict; dry_run = false)
 
-Deletes every data file whose stored parameters contain all the given key-value pairs (only the
-lightweight `params` metadata is read). Returns the paths of the (would-be) deleted files.
+Deletes every data file whose stored parameters contain all the given key-value pairs (the files
+[`find_sim_data`](@ref) lists). Returns the paths of the (would-be) deleted files.
 An empty filter is rejected because it would match every file.
 
 ```julia-repl
@@ -67,17 +124,8 @@ julia> delete_sim_data(Dict(:N => 100, :scheme => "upwind"))
 """
 function delete_sim_data(match_params::AbstractDict; dry_run::Bool = false)
     isempty(match_params) && throw(ArgumentError("refusing to delete with an empty filter (it would match every file)"))
-    wanted = Dict(Symbol(k) => _normalize_param(v) for (k, v) in match_params)
     matched = String[]
-    for path in _data_files()
-        file_params = try
-            jldopen(f -> haskey(f, "params") ? f["params"] : nothing, path, "r")
-        catch e
-            @warn "Could not read $(basename(path)) for the deletion check" exception = e
-            nothing
-        end
-        file_params === nothing && continue
-        all(((k, v),) -> haskey(file_params, k) && isequal(file_params[k], v), wanted) || continue
+    for (path, _) in _files_with_params(match_params)
         push!(matched, path)
         if dry_run
             @info "Would delete $(basename(path))"
