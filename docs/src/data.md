@@ -102,13 +102,14 @@ The resolution `res` always lists every axis: the spatial resolutions followed b
 
 ```julia
 does_sim_data_exist(params)                         # without loading the data
+find_sim_data(Dict(:N => 100))                      # list the files of every run with N = 100 (any subset of the parameters)
 delete_sim_data(Dict(:scheme => "upwind"); dry_run = true)   # preview, then delete
 rehash_sim_data(joinpath(get_save_path(), "data"); remove_keys = [:obsolete])
 load_sim_data("a1b2c3"; key = "raw")                # by hash prefix (REPL inspection)
 check_data(data)                                    # min/max/mean/NaN summary as a DataFrame
 ```
 
-`delete_sim_data` refuses an empty filter. `rehash_sim_data` writes the renamed file before removing the old one.
+`find_sim_data` prints one line per matching file (newest first) with the remaining parameters and returns the paths; `delete_sim_data` deletes exactly the files it would list and refuses an empty filter. `rehash_sim_data` writes the renamed file before removing the old one.
 
 ## 6. Parameter Normalisation
 

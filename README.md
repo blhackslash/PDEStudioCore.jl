@@ -87,7 +87,7 @@ Functions are referenced by name and resolved in the module set with `set_target
 
 ## Documentation
 
-The [documentation](https://blhackslash.github.io/PDEStudioCore.jl/) covers the data structures, the `SimulationConfig` in depth, storage and conversions, custom statistics and the full API. Upgrading from an earlier version? This is a breaking release without deprecated aliases; see the [Migration Guide](https://blhackslash.github.io/PDEStudioCore.jl/stable/migration/).
+The [documentation](https://blhackslash.github.io/PDEStudioCore.jl/) covers the data structures, the `SimulationConfig` in depth, storage and conversions, custom statistics and the full API.
 
 ## Citing
 

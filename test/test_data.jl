@@ -116,6 +116,22 @@ end
     save_sim_data(advection_solver_1d(keep_params); overwrite = true)
     @test does_sim_data_exist(delete_params) && does_sim_data_exist(keep_params)
 
+    # find_sim_data: any subset of the parameters, string or symbol keys, newest first
+    found = find_sim_data(Dict("test_flag" => "delete_me"); verbose = false)
+    @test found == [get_file_name(delete_params)]
+    found_n = find_sim_data(Dict(:N => 9, :scheme => "upwind"); verbose = false)
+    @test Set(found_n) ⊇ Set([get_file_name(delete_params), get_file_name(keep_params)])
+    @test issorted(mtime.(found_n); rev = true)
+    @test isempty(find_sim_data(Dict(:N => 9, :test_flag => "no such flag"); verbose = false))
+    @test length(find_sim_data(Dict(); verbose = false)) == length(PDEStudioCore._data_files())
+    io = IOBuffer()
+    @test find_sim_data(Dict(:test_flag => "delete_me"); io = io) == found
+    listing = String(take!(io))
+    @test startswith(listing, "1 data file with test_flag = delete_me:")
+    @test occursin(basename(found[1]), listing) && occursin("N = 9", listing) && !occursin("test_flag", split(listing, '\n')[2])
+    io = IOBuffer(); find_sim_data(Dict(:N => -1); io = io)
+    @test startswith(String(take!(io)), "0 data files with N = -1.")
+
     @test_throws ArgumentError delete_sim_data(Dict())  # would match every file
     @test length(delete_sim_data(Dict(:test_flag => "delete_me"); dry_run = true)) == 1
     @test does_sim_data_exist(delete_params)

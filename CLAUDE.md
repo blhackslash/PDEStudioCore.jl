@@ -52,8 +52,8 @@ and quick.
 ## Conventions
 
 - Requires Julia 1.12.
-- Breaking releases have no deprecated aliases (see `docs/src/migration.md`). If a change
-  the user asked for is breaking, add it to the migration guide.
+- Breaking releases have no deprecated aliases and no migration guide. If a change the
+  user asked for is breaking, say so prominently in the PR description.
 - New statistics: `register_stat!(name, kept_dims)` plus a `calc_stat(::Val{name}, …)`
   method; test them on a case with a known exact value.
 - Threaded code uses Polyester `@batch` / `Threads`; results must not depend on the thread
