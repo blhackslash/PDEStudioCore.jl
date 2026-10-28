@@ -95,4 +95,4 @@ If you use PDEStudioCore.jl in your research, please cite it via its Zenodo DOI:
 
 ---
 
-Portions of this codebase and documentation were drafted with the assistance of large language models (LLMs). All code has been human-reviewed, verified, and tested. If you notice any inaccuracies or unexpected behavior, please open an issue.
+Portions of this codebase and documentation were drafted by Claude Opus 5.5 and Fable 5.1 using Claude Code. All code has been human-reviewed, verified, and tested. If you notice any inaccuracies or unexpected behavior, please open an issue.
